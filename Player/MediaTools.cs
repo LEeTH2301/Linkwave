@@ -102,7 +102,15 @@ internal static class MediaTools
     public static async Task<object> Playlist(string id,string key,CancellationToken token)
     {
         if (!Regex.IsMatch(id,@"\A[A-Za-z0-9_-]{2,150}\z")) throw new ArgumentException("목록 링크를 확인하세요.");
-        if (key.Length==0) throw new IOException("설정에서 YouTube Data API 키를 입력하세요.");
+        if (string.IsNullOrWhiteSpace(key)) {
+            var mix=id.StartsWith("RD",StringComparison.Ordinal);
+            var url="https://www.youtube.com/playlist?list="+id;
+            if(mix && Regex.IsMatch(id,@"\ARD[A-Za-z0-9_-]{11}\z"))url=Video(id[2..])+"&list="+id;
+            var args=new List<string>{"--flat-playlist","--skip-download","--yes-playlist","--dump-single-json"};
+            if(mix)args.AddRange(["--playlist-end","100"]);
+            args.AddRange(["--",url]);
+            return ParseFlatPlaylist(await Run(args,token));
+        }
         var entries=new List<object>();
         string? page=null;
         var excluded=0;
@@ -118,6 +126,26 @@ internal static class MediaTools
             }
             page=data.TryGetProperty("nextPageToken",out var p)?p.GetString():null;
         } while (!string.IsNullOrEmpty(page));
+        return new {entries,excluded};
+    }
+    internal static object ParseFlatPlaylist(string json){
+        using var data=JsonDocument.Parse(json);
+        if(!data.RootElement.TryGetProperty("entries",out var rows) || rows.ValueKind!=JsonValueKind.Array)
+            throw new IOException("공개 재생목록을 읽지 못했습니다. 목록 링크와 공개 상태를 확인하세요.");
+        var entries=new List<object>();
+        int excluded=0;
+        foreach(var row in rows.EnumerateArray()){
+            string? Field(string name)=>row.ValueKind==JsonValueKind.Object && row.TryGetProperty(name,out var value) && value.ValueKind==JsonValueKind.String?value.GetString():null;
+            var id=Field("id");
+            var title=Field("title");
+            if(id==null || !Regex.IsMatch(id,@"\A[A-Za-z0-9_-]{11}\z") ||
+                Field("availability") is "private" or "needs_auth" or "subscriber_only" or "premium_only" ||
+                title is "[Deleted video]" or "[Private video]" or "Deleted video" or "Private video"){
+                excluded++;
+                continue;
+            }
+            entries.Add(new {id,title=string.IsNullOrWhiteSpace(title)?id:title,channel=Field("channel")??Field("uploader")});
+        }
         return new {entries,excluded};
     }
 }

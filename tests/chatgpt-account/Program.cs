@@ -17,6 +17,27 @@ if(args is ["--recognize",var audioPath,var modelPath]){
 }
 var folder=Directory.CreateTempSubdirectory("linkwave-account-test-");
 try{
+    if(args.Length==0 || args is ["--original-and-playlist"]){
+        const string song="koreanlyr01";
+        using var http=new HttpClient();
+        var service=new CaptionTranslation(folder.FullName,http);
+        CaptionTranslation.Cue[] korean=[new(1,3,"함께 걷는 이 길"),new(3,5,"너의 목소리"),new(6,9,"우리의 노래")];
+        var words=korean.Select(c=>c.text).ToArray();
+        var catalog=new CaptionTranslation.Generated(korean,"https://lyrics.example.org/original"){Original=words};
+        var translationOnly=new CaptionTranslation.Generated(korean,"https://lyrics.example.org/translation",publisher:"Label"){FanTranslation=true};
+        var dir=Directory.CreateDirectory(Path.Combine(folder.FullName,"GeneratedLyrics",Convert.ToHexString(Encoding.ASCII.GetBytes(song))));
+        await Captions.WriteJson(Path.Combine(dir.FullName,"test-model-low.json"),new CaptionTranslation.RankedLyrics([translationOnly,catalog]),default);
+        var match=await service.SearchOriginal(song,"Song",12,"ko",korean,"test-model","low",false,_=>{},default);
+        if(match.page!=catalog.page || !match.cues.Select(c=>c.text).SequenceEqual(words))throw new Exception("Korean original lookup");
+        await service.SaveOriginalPair(song,"ko",korean,match,default);
+        if((await service.CachedOriginal(song,"ko",korean,default))?.page!=catalog.page || await service.CachedOriginal(song,"ja",korean,default)!=null)
+            throw new Exception("Korean original cache");
+        var list=JsonSerializer.SerializeToElement(MediaTools.ParseFlatPlaylist("""{"entries":[{"id":"abcdefghijk","title":"First","uploader":"Singer"},null,{"id":"bad"},{"id":"abcdefghij1","title":"[Private video]"},{"id":"abcdefghij2","title":"Last"}]}"""));
+        var entries=list.GetProperty("entries");
+        if(list.GetProperty("excluded").GetInt32()!=3 || entries.GetArrayLength()!=2 || entries[0].GetProperty("channel").GetString()!="Singer" || entries[1].GetProperty("title").GetString()!="Last")
+            throw new Exception("Public playlist metadata");
+        if(args.Length>0){Console.WriteLine("Korean original search, cache and public playlist metadata passed.");return;}
+    }
     if(args is ["--check-strobo-remix",var exportFile]){
         const string id="q46J_-AoSCw";
         using var http=new HttpClient();var service=new CaptionTranslation(folder.FullName,http);

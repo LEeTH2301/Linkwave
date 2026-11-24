@@ -558,29 +558,31 @@ test('caption dialog commits '+buttonName+' only on success',async()=>{
   assert.equal(state.s.lyrics.video.candidate?.page,fail?undefined:untimed.page);
  }
 });
-test('external lyric lookup previews a bilingual track and saves only on Apply, retaining Korean timings',async()=>{
- for(const accept of [false,true]){
+test('external lyric lookup previews English and Korean originals and saves only on Apply, retaining timings',async()=>{
+ for(const language of ['en','ko'])for(const accept of [false,true]){
   const {state}=player('ko',{lang:'ko'}),buttons=new Map(),fields={};
   const inputCues=[{start:1,end:3,text:'첫 줄'},{start:3,end:5,text:'둘째 줄'},{start:6,end:8,text:'세 번째'}];
   await state.lyricSnapshot('video',state.s.lyrics.video,{kind:'youtube',cues:inputCues});
   const make=(tag,text)=>{const e={dataset:{},options:[],append(...v){this.options.push(...v);},querySelector(){return null;}};
    if(tag==='button')buttons.set(text,e);return e;};
+  const original=language==='ko'?['첫 줄','두 번째 줄']:['First line','Second line'];
   let saves=0,pairSaves=0;
   Object.assign(state,{choice:()=>({id:'video',title:'Title'}),el:make,$:()=>({}),field:(_,n,v)=>fields[n]=v,
    select:(_,value)=>Object.assign(make('select'),{value}),input:value=>({value}),save:()=>saves++,
    native:async(cmd,req)=>{
     if(cmd==='cachedGeneratedLyrics')return null;
-    if(cmd==='saveOriginalPair'){pairSaves++;assert.equal(req.language,'en');assert.equal(req.cues.length,3);assert.equal(req.result.cues.length,2);return;}
-    assert.equal(cmd,'searchOriginal');assert.equal(req.language,'en');assert.equal(req.title,'Title');return {page:'https://lrclib.net/api/get/1',cues:[{start:1,end:3,text:'First line'},{start:3,end:5,text:'Second line'}]};
+    if(cmd==='saveOriginalPair'){pairSaves++;assert.equal(req.language,language);assert.equal(req.cues.length,3);assert.equal(req.result.cues.length,2);return;}
+    assert.equal(cmd,'searchOriginal');assert.equal(req.language,language);assert.equal(req.title,'Title');return {page:'https://lrclib.net/api/get/1',cues:[{start:1,end:3,text:original[0]},{start:3,end:5,text:original[1]}]};
    },
-   dialog:async(_,fill)=>{fill(make('div'));await buttons.get('원어 가사 검색해서 한국어 자막에 추가').onclick();
+   dialog:async(_,fill)=>{fill(make('div'));const languages=fields['검색할 원어'];assert.ok(languages.options.some(o=>o.value===language));languages.value=language;
+    await buttons.get('원어 가사 검색해서 한국어 자막에 추가').onclick();
     assert.equal(fields['연결할 자막'].value,'screen');assert.equal(saves,0);return accept;}
   });
   state.s.audio=false;await state.captionPanel();
   assert.equal(saves,accept?1:0);assert.equal(pairSaves,accept?1:0);
   const snap=await state.lyricSnapshot('video',state.s.lyrics.video);
   assert.deepEqual(Array.from(snap.cues,c=>[c.start,c.end,c.text]),inputCues.map(c=>[c.start,c.end,c.text]));
-  assert.deepEqual(Array.from(snap.cues,c=>c.originalText),accept?['First line','Second line',undefined]:[undefined,undefined,undefined]);
+  assert.deepEqual(Array.from(snap.cues,c=>c.originalText),accept?[...original,undefined]:[undefined,undefined,undefined]);
  }
 });
 test('re-search button refreshes saved candidates once and preserves the manual selection',async()=>{

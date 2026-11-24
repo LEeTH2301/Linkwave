@@ -261,7 +261,7 @@ async function settings(){
   field(accountPage,'가사 검색·번역 연결',provider);accountPage.append(accountBox);
   field(accountPage,'OpenAI API 키',aiKey);keyField=aiKey.parentElement;
   field(accountPage,'한국어 자막이 없는 곡',enabled);field(accountPage,'번역 모델',model);field(accountPage,'추론 강도',effort);
-  field(accountPage,'YouTube Data API 키 · 외부 재생목록 가져오기',key);
+  field(accountPage,'YouTube Data API 키 (선택 · 비워 두면 공개 목록 직접 가져오기)',key);
   showAccount();void syncModels();
   sections[0].button.onclick();
   b.append(preview);
@@ -324,7 +324,7 @@ bind('thumbnailBtn',chooseThumbnail);
 function youtubeLanguageHint(title){
  return /[ぁ-ゖァ-ヺ]/u.test(title||'')?'ja':'';
 }
-function attachOriginal(korean,source){
+function attachOriginal(korean,source,replace=false){
  const groups=korean.map(()=>[]);
  for(const r of source){
   let best=-1,score=-Infinity;
@@ -337,7 +337,7 @@ function attachOriginal(korean,source){
   }
   if(best>=0)groups[best].push(r.text);
  }
- return korean.map((c,i)=>groups[i].length && !pairedOriginal(c.originalText,c.text)?
+ return korean.map((c,i)=>groups[i].length && (replace || !pairedOriginal(c.originalText,c.text))?
   {...c,originalText:groups[i].join('\n'),runs:null,translationRuns:c.translationRuns||c.runs}:c);
 }
 function japaneseCatalogPair(korean,set){
@@ -416,7 +416,7 @@ async function loadLyrics(id,updatedTrack=null,selectedLyrics=null){
   if(!saved?.cues?.length || g!==lyricGen || current!==id)return false;
   const paired=attachOriginal(korean,saved.cues);
   if(!paired.some((c,i)=>c!==korean[i]))return false;
-  const message='저장된 원어 + 한국어 자막';
+  const message=src?.catalogLanguage==='ko'?'저장된 한국어 원문 가사':'저장된 원어 + 한국어 자막';
   cues=paired;lastLines='';await updateLyrics();
   await lyricSnapshot(id,src,{kind:'youtube',cues:paired,message,page:saved.page,checkedCompanion:true,checkedCatalog:true});
   if(g===lyricGen && current===id)showTranslationInfo(id,message,saved.page);
@@ -814,7 +814,7 @@ async function captionPanel(track=choice()){
  const remote=el('button','YouTube 자막 불러오기'),local=el('button','LRC · SRT · VTT 파일 선택'),status=el('p');let tracks=[],file;
  const screen=el('button','원어 가사 검색해서 한국어 자막에 추가'),screenLanguage=el('select');
  let screenResult=null;
- for(const [code,label] of [['ja','일본어'],['en','영어']]){
+ for(const [code,label] of [['ja','일본어'],['en','영어'],['ko','한국어']]){
   const option=el('option',label);option.value=code;screenLanguage.append(option);
  }
  screenLanguage.value=old.catalogLanguage||old.screenOriginal||youtubeLanguageHint(track.title)||'en';
@@ -852,17 +852,19 @@ async function captionPanel(track=choice()){
    result??=await native('searchOriginal',{...request,title:track.title||trackName(track),provider:config.provider,language,
     duration:current===id&&typeof dur==='number'&&Number.isFinite(dur)?dur:track.duration||0,cues:base,generation:lyricGen});
    if(closed)return;
-   const paired=attachOriginal(korean,result.cues);
+   const paired=attachOriginal(korean,result.cues,true);
    const added=paired.filter((c,i)=>c!==korean[i]).length;
    if(!added)throw Error('기존 한국어 자막에 추가할 원어 가사 구간을 찾지 못했습니다.');
-   const value={lang:'ko',auto:false,catalogLanguage:language,screenBase:pick==='keep'?(old.screenBase||old.name):pick,name:'검색한 원어 + 한국어'};
-   screenResult={value,cache:{id,language,cues:base,result},snapshot:{kind:'youtube',cues:paired,page:result.page,checkedCatalog:true,message:'검색한 원어 + 한국어 · '+added+'개 구간 추가',checkedCompanion:true}};
+   const name=language==='ko'?'검색한 한국어 원문':'검색한 원어 + 한국어';
+   const message=name+' · '+added+'개 구간 연결';
+   const value={lang:'ko',auto:false,catalogLanguage:language,screenBase:pick==='keep'?(old.screenBase||old.name):pick,name};
+   screenResult={value,cache:{id,language,cues:base,result},snapshot:{kind:'youtube',cues:paired,page:result.page,checkedCatalog:true,message,checkedCompanion:true}};
    let option=picks.querySelector('[value="screen"]');
    if(!option){option=el('option');option.value='screen';picks.append(option);}
-   option.textContent='검색한 원어 + 한국어 · '+added+'개 구간 추가';
+   option.textContent=message;
    picks.value='screen';captureSelection();
    const example=paired.find((c,i)=>c!==korean[i]);
-   status.textContent='원어 검색 완료 · 적용할 자막 미리보기\n'+example.originalText+'\n'+example.text;
+   status.textContent='원어 검색 완료 · 적용할 자막 미리보기\n'+[pairedOriginal(example.originalText,example.text),example.text].filter(Boolean).join('\n');
   }catch(e){if(!closed)status.textContent=e.message;}
   finally{analyzing=false;if(!closed)for(const c of controls)c.disabled=false;}
  };
