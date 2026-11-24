@@ -1,0 +1,10 @@
+**/bin/
+**/obj/
+Player/tools/**/*.exe
+Player/tools/**/*.dll
+Player/tools/**/*.bin
+실행/
+/.audio-qa/
+/.generated-qa/
+/.spacing-qa/
+/.load-check/
