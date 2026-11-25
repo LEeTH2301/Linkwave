@@ -89,7 +89,14 @@ async function storeAudio(id){
 function prepareSelected(id){
  setTimeout(()=>{if(s.audio&&selected===id&&id!==current&&cacheStates.get(id)!=='ready')sources.prepare(id);},180);
 }
-const fresh=()=>({lists:[{name:'내 재생목록',id:crypto.randomUUID(),items:[]}],active:null,key:'',audio:false,shuffle:false,repeat:0,lyrics:{},style:{font:'맑은 고딕',size:30,bold:true,color:'#b7efaa',alpha:.85,before:0,after:1}});
+const fresh=()=>({
+ lists:[{name:'내 재생목록',id:crypto.randomUUID(),items:[]}],active:null,key:'',audio:true,shuffle:false,repeat:0,lyrics:{},showLyricsOnStartup:true,
+ style:{
+  font:'맑은 고딕',size:36,bold:true,color:'#fcffcc',original:true,autoCaptionColor:true,outlineColor:'#000000',outlineWidth:1.5,
+  alpha:.6,backgroundDarkness:.5,thumbnailBackground:true,bilingual:true,fitWidth:true,
+  before:'all',after:'all',lineGap:10,focusGap:15,scrollMotion:true,scrollAdjustMs:-50,introInfo:true
+ }
+});
 const library=()=>s.lists.find(l=>l.id===s.active)||s.lists[0];
 const item=id=>library().items.find(x=>x.id===id);
 const choice=()=>{if(!item(selected))throw Error('먼저 목록에서 곡을 선택하세요.');return item(selected);};

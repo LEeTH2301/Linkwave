@@ -37,7 +37,7 @@ class Host : Window
     Task? exportTask;
     string? saved;
     Rect fullBounds;
-    readonly Window lyrics=new() { Title="Linkwave · 가사", Topmost=true, Width=640, Height=140, MinWidth=260, MinHeight=85,
+    readonly Window lyrics=new() { Title="Linkwave · 가사", Topmost=true, Width=Math.Min(890,SystemParameters.WorkArea.Width), Height=Math.Min(493,SystemParameters.WorkArea.Height), MinWidth=260, MinHeight=85,
         WindowStyle=WindowStyle.None, AllowsTransparency=true, ResizeMode=ResizeMode.CanResizeWithGrip, ShowInTaskbar=false, ShowActivated=false };
     readonly LyricsViewport lyricRows=new() {Margin=new Thickness(15,6,15,6)};
     readonly SignalingOverlay signaling;
@@ -51,7 +51,7 @@ class Host : Window
     string? shownThumbnail;
     readonly ThumbnailCache thumbnails;
     readonly LyricVideo lyricVideo;
-    int requestedRows=2;
+    int requestedRows=7;
     bool showingPairs;
     string? scrollTrack;
     int scrollGeneration;
@@ -69,6 +69,9 @@ class Host : Window
         translator=new CaptionTranslation(data,new System.Net.Http.HttpClient{Timeout=TimeSpan.FromMinutes(4)});
         Title="Linkwave · 유튜브 플레이어"; Width=1150; Height=800; MinWidth=820; MinHeight=660;
         WindowStartupLocation=WindowStartupLocation.CenterScreen; Content=web;
+        var workArea=SystemParameters.WorkArea;
+        lyrics.Left=workArea.Left+(workArea.Width-lyrics.Width)*.5;
+        lyrics.Top=workArea.Top+(workArea.Height-lyrics.Height)*.812;
         void Control(string action,int value)=>Send(new {eventName="trayControl",action,value});
         tray=new PlayerTray(RestorePlayer,ExitPlayer,Control);
         lyricPlayer=new LyricsMiniPlayer(Control);
@@ -376,7 +379,7 @@ class Host : Window
                             analysis=c;
                             var korean=a.GetProperty("cues").Deserialize<CaptionTranslation.Cue[]>()??[];
                             return await translator.SearchOriginal(videoId,S("title"),N("duration"),S("language"),korean,
-                                S("model"),S("effort"),S("provider")!="api",CaptionProgress,c.Token);
+                                S("model"),S("effort"),S("provider")!="api",CaptionProgress,c.Token,allowAi:!a.TryGetProperty("allowAi",out var originalAi) || originalAi.GetBoolean());
                         }
                         if(S("cmd")=="findMissingTiming" || S("cmd")=="reinforceCandidate" &&
                             a.TryGetProperty("onlyMissing",out var missingOnly) && missingOnly.GetBoolean()){
@@ -401,7 +404,7 @@ class Host : Window
                         }
                         var search=translator.GenerateLyrics(videoId,S("title"),S("model"),S("effort"),AudioForLyrics,c.Token,S("provider")!="api",N("duration"),CaptionProgress,
                             partial=>{if(!c.IsCancellationRequested)Send(new {eventName="lyricCandidates",id=videoId,generation=N("generation"),refreshId=ticket,partial});},
-                            refresh:refreshing,keepPage:S("keepPage"));
+                            refresh:refreshing,keepPage:S("keepPage"),allowAi:!a.TryGetProperty("allowAi",out var ai) || ai.GetBoolean());
                         if(refreshing)refreshResults[videoId]=search;
                         if(initialSearch)lyricSearches[videoId]=(search,c);
                         return await search;

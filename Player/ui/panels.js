@@ -46,7 +46,7 @@ async function researchLyrics(track,old,previous,settings){
     job.message='유튜브 자막 저장됨 · 외부 가사 검색 중';renderResearch(job);
    }
   }
-  const set=await native('refreshLyrics',{...request,title:track.title,provider:config.provider,generation:lyricGen,
+  const set=await native('refreshLyrics',{...request,title:track.title,provider:config.provider,allowAi:config.enabled,generation:lyricGen,
    refreshId:ticket,keepPage:old.candidate?.page||'',duration:current===id&&typeof dur==='number'?dur:0});
   if(job.cancelling)return;
   if(set)await researchUpdate({id,refreshId:ticket,partial:set});
@@ -405,9 +405,9 @@ async function loadLyrics(id,updatedTrack=null,selectedLyrics=null){
  }
  const config=translationSettings();
  const pinned=src?.candidate;
- const automatic=config.enabled && !pinned && !src?.lang && !src?.local;
+ const automatic=!pinned && !src?.lang && !src?.local;
  const request={id,title:item(id)?.title||id,model:pinned?.model||config.model,effort:pinned?.effort||config.effort,provider:config.provider,
-  generation:g,duration:typeof dur==='number'&&Number.isFinite(dur)?dur:0};
+  allowAi:config.enabled,generation:g,duration:typeof dur==='number'&&Number.isFinite(dur)?dur:0};
  const snapshot=!updatedTrack&&!selectedLyrics&&!src?.local?await lyricSnapshot(id,src):null;
  if(g!==lyricGen||current!==id)return;
  const languageHint=youtubeLanguageHint(request.title);
@@ -605,7 +605,7 @@ async function loadLyrics(id,updatedTrack=null,selectedLyrics=null){
   showTranslationInfo(id,e.message);notice(e.message,()=>loadLyrics(id));
  }}
 }
-let lyricViewHeight=140,browseLine=null,anchorLine=0,viewCues=null,displayCues=[],phraseTimer=null;
+let lyricViewHeight=493,browseLine=null,anchorLine=0,viewCues=null,displayCues=[],phraseTimer=null;
 function previewFonts(runs,text){
  if(!text || !runs?.some(r=>r.pen?.fsFontStyle || r.pen?.szPenSize && r.pen.szPenSize!==100))return;
  const fonts=runs.map(r=>({text:r.text,pen:{fsFontStyle:r.pen?.fsFontStyle,szPenSize:r.pen?.szPenSize}}));
@@ -849,7 +849,7 @@ async function captionPanel(track=choice()){
      result={page:'https://piapro.jp/t/Ecu0',cues:rows.map(c=>({...c,text:c.originalText}))};
    }
    const base=korean.map(({start,end,text})=>({start,end:Number.isFinite(end)?end:start+5,text}));
-   result??=await native('searchOriginal',{...request,title:track.title||trackName(track),provider:config.provider,language,
+   result??=await native('searchOriginal',{...request,title:track.title||trackName(track),provider:config.provider,allowAi:config.enabled,language,
     duration:current===id&&typeof dur==='number'&&Number.isFinite(dur)?dur:track.duration||0,cues:base,generation:lyricGen});
    if(closed)return;
    const paired=attachOriginal(korean,result.cues,true);

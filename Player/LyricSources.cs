@@ -83,14 +83,17 @@ internal sealed partial class CaptionTranslation
     async Task<BatchResult> NamuLyricsTable(string id,string title,Task<VocalSong?> songTask,Task<BatchResult> google,CancellationToken token){
         var song=await songTask;
         var source=song?.lyrics?.FirstOrDefault(l=>l?.translationType=="Original")?.value;
-        if(string.IsNullOrWhiteSpace(source))return new([],[]);
-        var original=Normalize(source);
+        var original=Normalize(source??"");
         var direct="https://namu.wiki/w/"+Uri.EscapeDataString(song?.name??title);
         async Task<Generated?> Read(string url){
             var html=await PublicPage(url,token);
             if(!html.Contains(id,StringComparison.Ordinal))return null;
             string page=Regex.Match(html,"<link rel=\"canonical\" href=\"([^\"]+)\"").Groups[1].Value;
             if(SourceUri(page)?.Host!="namu.wiki")page=url;
+            // Without catalog lyrics, only accept one bilingual table on the matching song's own page.
+            if(original.Length==0 && (SourceUri(page) is not {} uri || !uri.AbsolutePath.StartsWith("/w/") ||
+                CatalogTitle(Uri.UnescapeDataString(uri.AbsolutePath[3..]))!=CatalogTitle(title)))return null;
+            Generated? single=null;
             foreach(Match table in Regex.Matches(html,@"<table\b[^>]*>(.*?)</table>",RegexOptions.Singleline|RegexOptions.IgnoreCase)){
                 var rows=Regex.Matches(table.Groups[1].Value,@"<tr\b[^>]*>(.*?)</tr>",RegexOptions.Singleline|RegexOptions.IgnoreCase)
                     .Select(m=>(jp:Regex.IsMatch(m.Value,"\\blang=['\"]ja['\"]"),text:WebUtility.HtmlDecode(Regex.Replace(m.Groups[1].Value,"<[^>]+>","")).Trim())).ToArray();
@@ -101,12 +104,14 @@ internal sealed partial class CaptionTranslation
                 }
                 if(!HasLyricBody(ja.ToArray()))continue;
                 var words=Normalize(string.Concat(ja));
-                if(words.Length<original.Length*.90 || words.Length>original.Length*1.10 ||
+                if(original.Length>0 && (words.Length<original.Length*.90 || words.Length>original.Length*1.10 ||
                     !original.Contains(Normalize(ja[0])) || !original.Contains(Normalize(ja[^1])) ||
-                    ja.Count(line=>original.Contains(Normalize(line)))<ja.Count*.90)continue;
-                return new Generated([],page,ko.ToArray()){Original=ja.ToArray(),FanTranslation=true};
+                    ja.Count(line=>original.Contains(Normalize(line)))<ja.Count*.90))continue;
+                if(single!=null)return null;
+                single=new Generated([],page,ko.ToArray()){Original=ja.ToArray(),FanTranslation=true};
+                if(original.Length>0)return single;
             }
-            return null;
+            return single;
         }
         if(await Read(direct) is {} hit)return new([hit],[]);
         foreach(var link in (await google).Leads.Where(l=>l!=direct && SourceUri(l)?.Host=="namu.wiki").Distinct().Take(3))

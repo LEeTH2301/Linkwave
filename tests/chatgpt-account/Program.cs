@@ -17,6 +17,19 @@ if(args is ["--recognize",var audioPath,var modelPath]){
 }
 var folder=Directory.CreateTempSubdirectory("linkwave-account-test-");
 try{
+    if(args.Length==0 || args is ["--public-search"]){
+        using var publicHttp=new HttpClient(new PublicSearchServer());
+        var service=new CaptionTranslation(folder.FullName,publicHttp);
+        foreach(bool allowAi in new[]{true,false}){
+            var publicSongId=allowAi?"public00001":"public00002";
+            var messages=new List<string>();
+            var resultSet=await service.GenerateLyrics(publicSongId,"Sample Song","test-model","low",
+                _=>throw new Exception("Unexpected transcription"),default,true,180,messages.Add,allowAi:allowAi);
+            if(resultSet?.choices.Any(g=>g.page.StartsWith("https://lrclib.net/") && g.cues.Length==3)!=true ||
+                !messages.Contains("공개 출처에서 가사 검색 중"))throw new Exception("Missing public lyrics without ChatGPT");
+        }
+        if(args.Length>0){Console.WriteLine("Public-only search passed with disconnected account and AI disabled.");return;}
+    }
     if(args.Length==0 || args is ["--original-and-playlist"]){
         const string song="koreanlyr01";
         using var http=new HttpClient();
@@ -532,6 +545,15 @@ try{
     try{await reopened.SignIn(server.Browser,timeout.Token);throw new Exception("accepted invalid nonce");}catch(IOException e) when(e.Message.Contains("로그인 정보")){}
     Console.WriteLine("Passed loopback sign-in, PKCE, signature/nonce checks, refresh, account models, streamed translation, audio isolation and sign-out.");
 }finally{folder.Delete(true);}
+
+sealed class PublicSearchServer:HttpMessageHandler{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage req,CancellationToken token){
+        if(req.RequestUri!.Host.EndsWith("openai.com"))throw new Exception("Public search tried to contact OpenAI");
+        var res=req.RequestUri.Host=="lrclib.net"?new HttpResponseMessage(HttpStatusCode.OK){Content=new StringContent(
+            """[{"id":123,"trackName":"Sample Song","artistName":"Singer","duration":180,"syncedLyrics":"[00:01.00]First line\n[00:10.00]Second line\n[00:20.00]Last line","plainLyrics":"First line\nSecond line\nLast line"}]""")}:new HttpResponseMessage(HttpStatusCode.NotFound);
+        return Task.FromResult(res);
+    }
+}
 
 sealed class AuthServer:HttpMessageHandler{
     public bool LiveNamu;

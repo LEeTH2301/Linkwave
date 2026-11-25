@@ -21,7 +21,9 @@ test('one track click starts audio, and subtitle clicks seek only the active tra
  });
  const run=source=>vm.runInContext(source,state);
  for(const name of ['core','stream','app'])run(fs.readFileSync(path.join(__dirname,'../Player/ui',name+'.js'),'utf8'));
- run("s=fresh();s.audio=true;s.lists[0].items=[{id:'one',title:'One'},{id:'two',title:'Two'}];render()");
+ run("s=fresh();s.lists[0].items=[{id:'one',title:'One'},{id:'two',title:'Two'}];render()");
+ assert.deepEqual(Array.from(run('[s.audio,s.showLyricsOnStartup,s.style.size,s.style.alpha,s.style.before,s.style.after,s.style.lineGap,s.style.focusGap,s.style.scrollAdjustMs]')),
+  [true,true,36,.6,'all','all',10,15,-50]);
  await byId('tracks').children[0].onclick();
  run('audio.duration=120;audio.onloadedmetadata()');
  assert.equal(run('playing && current==="one"'),true);
@@ -116,7 +118,7 @@ test('video moves between the lyric window and the main mini player at the same 
   }}},addEventListener(){},updateLyrics(){},loadLyrics:id=>loaded.push(id)});
  const run=source=>vm.runInContext(source,state);
  for(const name of ['core','stream','app'])run(fs.readFileSync(path.join(__dirname,'../Player/ui',name+'.js'),'utf8'));
- run("s=fresh();selected='one';s.lists[0].items=[{id:'one',title:'One'}];let translationInfo=null;save=()=>{};");
+ run("s=fresh();s.audio=false;selected='one';s.lists[0].items=[{id:'one',title:'One'}];let translationInfo=null;save=()=>{};");
  await run("start('one',21.75,false)");const old=run('frame');
  assert.ok(old);assert.equal(commands.some(m=>m.cmd==='info'),false);
  await run('showLyricsWindow(true)');assert.equal(old.removed,true);

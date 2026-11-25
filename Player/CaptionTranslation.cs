@@ -45,6 +45,7 @@ internal sealed partial class CaptionTranslation(string folder,HttpClient http)
             var cached=JsonSerializer.Deserialize<Result>(await File.ReadAllTextAsync(path,token));
             if(cached?.lines?.Length==source.Length && cached.lines.All(s=>!string.IsNullOrWhiteSpace(s)))return cached;
         }catch(JsonException){}
+        if(plan && !fresh && !Account.CanUsePlan)return null;
         var key=new Access(plan?await Account.Token(token):Key(),plan);
         if(key.Token.Length==0)return null;
         title=await SearchTitle(id,title,status,token);

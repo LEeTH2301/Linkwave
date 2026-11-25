@@ -648,15 +648,18 @@ test('manual search keeps the registered YouTube track and collects external lyr
  assert.deepEqual(calls,['caption','refreshLyrics']);
  assert.equal((await state.lyricSnapshot('video',{})).track,registered);
 });
-test('switching songs discards generated lyrics; disabled translations do not start analysis',async()=>{
+test('switching songs discards late lyrics and public search works with AI switched off',async()=>{
  const {state,translating,finish}=player();const native=state.native;
  state.native=async cmd=>cmd==='generateLyrics'?native('translate'):null;
  const loading=state.loadLyrics('video');await translating;
  state.current='other';finish({cues:[{start:1,end:2,text:'late'}]});await loading;
  assert.equal(state.cues.length,0);
  state.current='video';state.s.translation={enabled:false};
- state.native=async cmd=>{assert.ok(['cachedGeneratedLyrics','caption','stopTranslation'].includes(cmd));return null;};
- await state.loadLyrics('video');assert.equal(state.cues.length,0);
+ let searched=false;
+ state.native=async (cmd,req)=>{if(cmd==='generateLyrics'){
+  assert.equal(req.allowAi,false);searched=true;return {choices:[{page:'https://lrclib.net/test',cues:[{start:1,end:2,text:'Public lyric'}]}]};
+ }assert.ok(['cachedGeneratedLyrics','caption','stopTranslation'].includes(cmd));return null;};
+ await state.loadLyrics('video');assert.equal(searched,true);assert.equal(state.cues[0].text,'Public lyric');
 });
 test('footer shows search, apply and untimed result without fabricating cues',async()=>{
  const {state}=player();

@@ -34,7 +34,7 @@ internal sealed partial class CaptionTranslation
     }
 
     internal async Task<OriginalMatches> SearchOriginal(string id,string title,double duration,string language,Cue[] korean,
-        string model,string effort,bool plan,Action<string> status,CancellationToken token){
+        string model,string effort,bool plan,Action<string> status,CancellationToken token,bool allowAi=true){
         if(language is not ("ja" or "en" or "ko") || !korean.Any(c=>Regex.IsMatch(c.text,"[가-힣]")))
             throw new IOException("시간 정보가 있는 한국어 자막과 검색할 언어를 선택하세요.");
         bool External(Generated g){
@@ -77,7 +77,7 @@ internal sealed partial class CaptionTranslation
         var found=new List<Generated>();
         OriginalMatches? match=null;
         await CollectLyrics(id,title,duration,model,effort,plan,korean,found,[],status,()=>Task.CompletedTask,token,null,[],
-            originalMatchFound:()=>(match=Match(found.Concat(cached)))!=null,originalLanguage:language);
+            originalMatchFound:()=>(match=Match(found.Concat(cached)))!=null,originalLanguage:language,allowAi:allowAi);
         return match??Match(found.Concat(cached))??throw new IOException("외부 가사에서 선택한 언어와 한국어 자막에 대응하는 구절을 확인하지 못했습니다.");
     }
     record Recording(long id,string trackName,string artistName,double? duration,string? syncedLyrics,string? plainLyrics);
@@ -94,7 +94,7 @@ internal sealed partial class CaptionTranslation
     }
 
     async Task CollectLyrics(string id,string videoTitle,double duration,string model,string effort,bool plan,Cue[] heard,
-        List<Generated> results,List<string> failures,Action<string>? status,Func<Task> publish,CancellationToken cancellation,string? keepPage,Generated[] savedChoices,bool timedSourcesOnly=false,Func<bool>? originalMatchFound=null,string? originalLanguage=null){
+        List<Generated> results,List<string> failures,Action<string>? status,Func<Task> publish,CancellationToken cancellation,string? keepPage,Generated[] savedChoices,bool timedSourcesOnly=false,Func<bool>? originalMatchFound=null,string? originalLanguage=null,bool allowAi=true){
         bool catalogOriginals=originalMatchFound!=null;
         using var lifetime=CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         var token=lifetime.Token;
@@ -202,7 +202,9 @@ internal sealed partial class CaptionTranslation
             return new([new Generated([],page,card.lines){Original=card.lines}],links);
         }
 
-        var queue=new Queue<LyricSite>(catalogOriginals?LyricSites.Where(site=>site.Domains.Length>0 && !site.Domains.Contains("www.youtube.com")):LyricSites);
+        bool useAi=allowAi && (plan?Account.CanUsePlan:HasKey);
+        if(!useAi)status?.Invoke("공개 출처에서 가사 검색 중");
+        var queue=new Queue<LyricSite>(!useAi?Enumerable.Empty<LyricSite>():catalogOriginals?LyricSites.Where(site=>site.Domains.Length>0 && !site.Domains.Contains("www.youtube.com")):LyricSites);
         var tasks=new List<Task<BatchResult>>();
         void StartSite(){if(queue.TryDequeue(out var site))tasks.Add(SearchSite(site,leads.ToArray()));}
         StartSite();StartSite();
@@ -271,7 +273,7 @@ internal sealed partial class CaptionTranslation
                     await publish();
                 }
                 var catalog=done==google || done==recordings || done==alsong || done==vocalLyrics || done==labelLyrics || done==wikiTable;
-                if(catalog && !catalogOriginals){
+                if(catalog && !catalogOriginals && useAi){
                     foreach(var item in usable){
                         if(savedChoices.Any(old=>old.page==item.page && HasTimedTranslation(old) && SameCueStarts(old,item)))continue;
                         var lines=item.plain??item.cues.Select(c=>c.text).ToArray();

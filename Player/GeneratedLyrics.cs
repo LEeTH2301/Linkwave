@@ -121,7 +121,7 @@ internal sealed partial class CaptionTranslation
 
     public async Task<RankedLyrics?> GenerateLyrics(string id,string title,string model,string effort,
         Func<CancellationToken,Task<string>> getAudio,CancellationToken token,bool plan=false,double duration=0,Action<string>? status=null,Action<RankedLyrics>? preview=null,
-        bool refresh=false,string? keepPage=null){
+        bool refresh=false,string? keepPage=null,bool allowAi=true){
         var cached=await CachedLyrics(id,model,effort,token);
         if(!refresh && cached!=null)return cached with {searching=false};
         if(refresh && (cached?.choices.Length is null or 0 || !string.IsNullOrEmpty(keepPage) && cached.choices.All(g=>g.page!=keepPage))){
@@ -162,7 +162,7 @@ internal sealed partial class CaptionTranslation
             token.ThrowIfCancellationRequested();
             preview?.Invoke(partial);
         }
-        await CollectLyrics(id,title,duration,model,effort,plan,ValidCues(heard)?heard!:[],results,failures,status,Publish,token,keepPage,cached?.choices??[]);
+        await CollectLyrics(id,title,duration,model,effort,plan,ValidCues(heard)?heard!:[],results,failures,status,Publish,token,keepPage,cached?.choices??[],allowAi:allowAi);
         token.ThrowIfCancellationRequested();
         if(results.Count==0){
             var saved=new RankedLyrics(cached?.choices??[],warning:failures.Count>0?string.Join(" · ",failures.Distinct()):cached?.choices.Length>0?"새 결과 없음 · 저장된 가사 유지":null);
@@ -171,7 +171,7 @@ internal sealed partial class CaptionTranslation
         }
         status?.Invoke("자막 후보 정확도 비교 중");
         var choices=CurrentChoices();
-        if(!plan && !ValidCues(heard) && choices[0].cues.Length==0 && Key() is {Length:>0} key){
+        if(allowAi && !plan && !ValidCues(heard) && choices[0].cues.Length==0 && Key() is {Length:>0} key){
             try{
                 status?.Invoke("보컬 시각 분석 중");
                 heard=await Transcribe(key,await getAudio(token),token);

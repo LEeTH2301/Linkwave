@@ -9,6 +9,7 @@
     <Nullable>enable</Nullable>
     <PlatformTarget>x64</PlatformTarget>
     <AssemblyName>Linkwave</AssemblyName>
+    <Version>0.1.1</Version>
   </PropertyGroup>
   <ItemGroup>
     <Using Remove="System.Drawing;System.Windows.Forms" />

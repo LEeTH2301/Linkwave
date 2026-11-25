@@ -18,6 +18,12 @@ internal sealed class ChatGptAccount(string folder,HttpClient http)
     record Session(string Client,string Subject,string Label,string Access,string Refresh,string Scope,long Expiry);
     readonly SemaphoreSlim gate=new(1);
     string FileName=>Path.Combine(folder,"chatgpt-account.bin");
+    public bool CanUsePlan {
+        get {
+            try{return Read()?.Scope.Split(' ').Contains(Permission)==true;}
+            catch(Exception e) when(e is IOException or CryptographicException or JsonException){return false;}
+        }
+    }
     Session? Read()=>File.Exists(FileName)?JsonSerializer.Deserialize<Session>(
         ProtectedData.Unprotect(File.ReadAllBytes(FileName),null,DataProtectionScope.CurrentUser)):null;
     void Save(Session session){
