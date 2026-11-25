@@ -5,6 +5,19 @@ const path=require('node:path');
 const vm=require('node:vm');
 const scripts=['core.js','panels.js'].map(file=>fs.readFileSync(path.join(__dirname,'../Player/ui',file),'utf8')).join('\n');
 const text='WEBVTT\n\n00:01.000 --> 00:02.000\nOne\n\n00:03.000 --> 00:04.000\nTwo';
+test('a registered translation does not replace a verified Korean original',async()=>{
+ const {state}=player('ja');const calls=[];
+ state.native=async cmd=>{
+  calls.push(cmd);
+  if(cmd==='caption')return {lang:'ja',label:'Japanese',audioLanguageCode:'ko',text};
+  if(cmd==='koreanOriginalForCaption')return {page:'https://namu.wiki/w/Song',cues:[{start:1,end:2,text:'원문'}]};
+  return null;
+ };
+ await state.loadLyrics('video');
+ assert.equal(state.cues[0].text,'원문');assert.ok(!calls.includes('translate'));
+ const snapshot=await state.lyricSnapshot('video',{});assert.equal(snapshot.originalLanguage,'ko');
+ calls.length=0;await state.loadLyrics('video');assert.ok(!calls.includes('koreanOriginalForCaption'));
+});
 function player(lang='en',selection={}){
  const stored=new Map();
  let finish,started;

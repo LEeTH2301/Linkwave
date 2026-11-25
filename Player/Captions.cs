@@ -11,6 +11,8 @@ internal static class Captions
     internal record Track(string lang,string label,bool auto,string url,bool translated=false,bool original=false,bool audioLanguage=false);
     internal record SavedTrack(string lang,string label,bool auto,string text,bool? translated=null){
         [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public string? audioLanguageCode {get;init;}
+        [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
         public SavedTrack? companion {get;init;}
     }
     static string Folder(string id){

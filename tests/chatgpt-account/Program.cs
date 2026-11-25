@@ -17,6 +17,10 @@ if(args is ["--recognize",var audioPath,var modelPath]){
 }
 var folder=Directory.CreateTempSubdirectory("linkwave-account-test-");
 try{
+    if(args is ["--check-korean-wiki",..] && args.Length==6){
+        await CheckKoreanWiki(args);
+        return;
+    }
     if(args.Length==0 || args is ["--public-search"]){
         using var publicHttp=new HttpClient(new PublicSearchServer());
         var service=new CaptionTranslation(folder.FullName,publicHttp);
@@ -545,6 +549,19 @@ try{
     try{await reopened.SignIn(server.Browser,timeout.Token);throw new Exception("accepted invalid nonce");}catch(IOException e) when(e.Message.Contains("로그인 정보")){}
     Console.WriteLine("Passed loopback sign-in, PKCE, signature/nonce checks, refresh, account models, streamed translation, audio isolation and sign-out.");
 }finally{folder.Delete(true);}
+
+static async Task CheckKoreanWiki(string[] args){
+    var html=await File.ReadAllTextAsync(args[3]);
+    var lines=CaptionTranslation.KoreanWikiLines(html,args[1],args[2])??throw new Exception("No verified Korean lyric section");
+    var track=JsonSerializer.Deserialize<Captions.SavedTrack>(await File.ReadAllTextAsync(args[4]))!;
+    var cues=CaptionTranslation.MatchKoreanReading(lines,track);
+    if(cues.Length!=lines.Length)throw new Exception($"Reading mismatch: {cues.Length}/{lines.Length}");
+    if(CaptionTranslation.MatchKoreanReading(lines.Reverse().ToArray(),track).Length!=0)throw new Exception("Accepted unrelated order");
+    var page="https://namu.wiki/w/"+Uri.EscapeDataString(args[2]);
+    var candidate=new CaptionTranslation.Generated(cues,page){Original=lines,OriginalSource=page,OriginalLanguage="ko",TimingNote="한국어 원문 · 등록 자막 발음과 시각 일치"};
+    await File.WriteAllTextAsync(args[5],JsonSerializer.Serialize(candidate));
+    Console.WriteLine($"Verified {cues.Length} Korean lyric lines, {cues[0].start} to {cues[^1].end} seconds.");
+}
 
 sealed class PublicSearchServer:HttpMessageHandler{
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage req,CancellationToken token){

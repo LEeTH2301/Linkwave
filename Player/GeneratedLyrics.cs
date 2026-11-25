@@ -12,6 +12,7 @@ internal sealed partial class CaptionTranslation
     internal record Generated(Cue[] cues,string page,string[]? plain=null,string? publisher=null,string? proof=null,string? reason=null){
         public string[]? Original {get;init;}
         public string? OriginalSource {get;init;}
+        public string? OriginalLanguage {get;init;}
         public bool FanTranslation {get;init;}
         public bool FromOriginalVersion {get;init;}
         public string? ArtistCredit {get;init;}

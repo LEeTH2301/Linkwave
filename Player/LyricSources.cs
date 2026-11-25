@@ -84,7 +84,8 @@ internal sealed partial class CaptionTranslation
         var song=await songTask;
         var source=song?.lyrics?.FirstOrDefault(l=>l?.translationType=="Original")?.value;
         var original=Normalize(source??"");
-        var direct="https://namu.wiki/w/"+Uri.EscapeDataString(song?.name??title);
+        var documentTitle=WikiSongTitle(song?.name??title);
+        var direct="https://namu.wiki/w/"+Uri.EscapeDataString(documentTitle);
         async Task<Generated?> Read(string url){
             var html=await PublicPage(url,token);
             if(!html.Contains(id,StringComparison.Ordinal))return null;
@@ -92,7 +93,16 @@ internal sealed partial class CaptionTranslation
             if(SourceUri(page)?.Host!="namu.wiki")page=url;
             // Without catalog lyrics, only accept one bilingual table on the matching song's own page.
             if(original.Length==0 && (SourceUri(page) is not {} uri || !uri.AbsolutePath.StartsWith("/w/") ||
-                CatalogTitle(Uri.UnescapeDataString(uri.AbsolutePath[3..]))!=CatalogTitle(title)))return null;
+                CatalogTitle(Uri.UnescapeDataString(uri.AbsolutePath[3..]))!=CatalogTitle(documentTitle)))return null;
+            if(KoreanWikiLines(html,id,documentTitle) is {} lines){
+                foreach(var track in await Captions.RegisteredSaved(id,token)){
+                    var timed=MatchKoreanReading(lines,track);
+                    if(timed.Length>0)return new Generated(timed,page){Original=lines,OriginalSource=page,OriginalLanguage="ko",TimingNote="한국어 원문 · 등록 자막 발음과 시각 일치"};
+                }
+                bool korean=Captions.SongFor(id,title,0).language?.Split('-')[0]=="ko" ||
+                    song?.lyrics?.Any(l=>l.translationType=="Original" && l.cultureCodes?.Contains("ko")==true && Normalize(l.value??"")==Normalize(string.Concat(lines)))==true;
+                return new Generated([],page,lines){Original=korean?lines:null,OriginalSource=korean?page:null,OriginalLanguage=korean?"ko":null};
+            }
             Generated? single=null;
             foreach(Match table in Regex.Matches(html,@"<table\b[^>]*>(.*?)</table>",RegexOptions.Singleline|RegexOptions.IgnoreCase)){
                 var rows=Regex.Matches(table.Groups[1].Value,@"<tr\b[^>]*>(.*?)</tr>",RegexOptions.Singleline|RegexOptions.IgnoreCase)

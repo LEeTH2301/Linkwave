@@ -3,4 +3,5 @@
   <ItemGroup><Compile Include="../../Player/ChatGptAccount.cs;../../Player/CaptionTranslation.cs;../../Player/GeneratedLyrics.cs;../../Player/LyricSearch.cs;../../Player/LyricSources.cs;../../Player/LyricTiming.cs;../../Player/AudioTranscription.cs;../../Player/Captions.cs;../../Player/MediaTools.cs"/></ItemGroup>
   <ItemGroup><Compile Include="../../Player/AlsongLyrics.cs;../../Player/VocalLyrics.cs;../../Player/ReferenceTiming.cs;../../Player/ScreenLyrics.cs" /></ItemGroup>
   <ItemGroup><Compile Include="../../Player/SavedSpeechTiming.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../Player/KoreanWikiLyrics.cs" /></ItemGroup>
 </Project>

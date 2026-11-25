@@ -460,7 +460,7 @@ async function loadLyrics(id,updatedTrack=null,selectedLyrics=null){
   // For PPPP wait for the paired track before painting a legacy Korean-only preview.
   if(id!==ppppVideo || !checkCompanion){cues=snapshot.cues;await updateLyrics();}
   if(g!==lyricGen||current!==id)return;
-  showTranslationInfo(id,snapshot.message,snapshot.page);
+  showTranslationInfo(id,snapshot.message,snapshot.page,snapshot.plain);
   if(catalogAllowed && !snapshot.checkedCatalog && (snapshot.checkedCompanion || src?.screenOriginal) &&
      (src?.screenOriginal || !snapshot.cues.some(c=>c.originalText)) && snapshot.cues.some(c=>/[가-힣]/u.test(c.text))){
    if(await useCatalog(snapshot.cues))return;
@@ -580,13 +580,31 @@ async function loadLyrics(id,updatedTrack=null,selectedLyrics=null){
  if(companion.length)cues=dedicated?ppppCues(companion,cues):pairYoutubeCues(companion,cues);
  showTranslationInfo(id,'자막 적용 중');lastLines='';await updateLyrics();
  if(g!==lyricGen||current!==id)return;
+ const koreanAudio=/^ko(?:-|$)/i.test(track?.audioLanguageCode);
+ if(automatic && !companion.length && track && !track.auto && !/^ko(?:-|$)/i.test(track.lang) &&
+    (koreanAudio || /^ja(?:-|$)/i.test(track.lang) && cues.filter(c=>/^[（(]?\s*[ァ-ヺ][^\n]*\n/u.test(c.text)).length>=3)){
+  const verified=await native('koreanOriginalForCaption',{id,title:request.title,track}).catch(()=>null);
+  if(g!==lyricGen||current!==id)return;
+  if(verified?.cues?.length){
+   cues=verified.cues;lastLines='';await updateLyrics();
+   if(g!==lyricGen||current!==id)return;
+   const message='한국어 원문 · 등록 자막 시각 대조 · '+cues.length+'개 구간';
+   await lyricSnapshot(id,src,{kind:'youtube',cues,message,page:verified.page,originalLanguage:'ko',checkedCatalog:true,checkedCompanion:true});
+   showTranslationInfo(id,message,verified.page);return;
+  }
+  if(koreanAudio){
+   const message='한국어 음원 · '+track.label+' 자막 표시'+(verified?.plain?.length?' · 한국어 원문은 가사 보기에서 확인':'');
+   await lyricSnapshot(id,src,{kind:'youtube',cues,message,page:verified?.page,plain:verified?.plain,originalLanguage:'ko',checkedCatalog:true,checkedCompanion:true});
+   showTranslationInfo(id,message,verified?.page,verified?.plain);return;
+  }
+ }
  const message=cues.length?(dedicated?'PPPP 전용 자막':companion.length?'유튜브 등록 자막 · '+track.companion.label+' + '+track.label:'자막 적용 완료')+' · '+cues.length+'개 구간':'사용 가능한 등록 자막 없음';
  showTranslationInfo(id,message);
  if(!cues.length||src?.lang||src?.local||!config.enabled||/^ko(?:-|$)/i.test(track.lang)){await saveTrack(message,null,companion.length?(id===ppppVideo?2:1):null);return;}
  await lyricSnapshot(id,src,{kind:'youtubeTrack',track,model:request.model,effort:request.effort});
  if(g!==lyricGen)return;
  const original=cues;
- showTranslationInfo(id,track.label+' 원문 표시 중 · 한국어 번역 확인 중');
+ showTranslationInfo(id,track.label+' 자막 표시 중 · 한국어 번역 확인 중');
  try{
   const result=await native('translate',{...request,language:track.lang,lines:original.map(c=>c.text)});
   if(g!==lyricGen||current!==id)return;
@@ -817,7 +835,8 @@ async function captionPanel(track=choice()){
  for(const [code,label] of [['ja','일본어'],['en','영어'],['ko','한국어']]){
   const option=el('option',label);option.value=code;screenLanguage.append(option);
  }
- screenLanguage.value=old.catalogLanguage||old.screenOriginal||youtubeLanguageHint(track.title)||'en';
+ const knownLanguage=previous?.item?.OriginalLanguage||previous?.originalLanguage||previous?.track?.audioLanguageCode?.split('-')[0]||selectedCandidate()?.OriginalLanguage;
+ screenLanguage.value=old.catalogLanguage||old.screenOriginal||(['ko','ja','en'].includes(knownLanguage)?knownLanguage:youtubeLanguageHint(track.title))||'en';
  screen.onclick=async()=>{
   if(analyzing || researchJobs.has(id))return;
   analyzing=true;

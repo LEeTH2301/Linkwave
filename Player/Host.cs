@@ -312,8 +312,13 @@ class Host : Window
                     a.GetProperty("result").Deserialize<CaptionTranslation.OriginalMatches>()!,token);
                 return null;
             case "loopRoomCaptions":return await Captions.ReadLoopRoom(S("id"),token);
-            case "caption":return await Captions.Read(S("id"),S("language"),a.GetProperty("automatic").GetBoolean(),token,a.TryGetProperty("refresh",out var force) && force.GetBoolean(),S("languageHint"),a.TryGetProperty("savedPairOnly",out var localPair) && localPair.GetBoolean());
+            case "caption":{
+                var track=await Captions.Read(S("id"),S("language"),a.GetProperty("automatic").GetBoolean(),token,a.TryGetProperty("refresh",out var force) && force.GetBoolean(),S("languageHint"),a.TryGetProperty("savedPairOnly",out var localPair) && localPair.GetBoolean());
+                return track==null?null:track with {audioLanguageCode=Captions.SongFor(S("id"),"",0).language??track.audioLanguageCode};
+            }
             case "hasTranslationKey":return translator.HasKey;
+            case "koreanOriginalForCaption":
+                return await translator.KoreanOriginalForCaption(S("id"),S("title"),a.GetProperty("track").Deserialize<Captions.SavedTrack>()!,token);
             case "chatgptStatus":return translator.Account.Status();
             case "chatgptModels":return await translator.Account.Models(token);
             case "chatgptSignIn":await translator.Account.SignIn(Open,token);return translator.Account.Status();
