@@ -26,6 +26,13 @@ internal sealed class LyricsViewport : Panel
     string? trackId;
     int RowCount=>Children.Count-(leaving==null?0:1);
     public LyricsViewport() => ClipToBounds=true;
+    public void ResizeWithWindow(Size window,bool enabled){
+        if(window.Width<=0 || window.Height<=0)return;
+        double scale=enabled?Math.Clamp(Math.Sqrt(window.Width/890*window.Height/493),.4,3):1;
+        if(LayoutTransform.Value.M11==scale)return;
+        var zoom=new ScaleTransform(scale,scale);
+        zoom.Freeze();LayoutTransform=zoom;
+    }
 
     void RemoveLeaving(){
         if(leaving==null)return;

@@ -5,6 +5,15 @@ const path=require('node:path');
 const vm=require('node:vm');
 const scripts=['core.js','panels.js'].map(file=>fs.readFileSync(path.join(__dirname,'../Player/ui',file),'utf8')).join('\n');
 const text='WEBVTT\n\n00:01.000 --> 00:02.000\nOne\n\n00:03.000 --> 00:04.000\nTwo';
+test('cached wiki captions drop footnotes without shifting remaining cue times',async()=>{
+ const {state}=player();
+ const saved={kind:'youtube',page:'https://namu.wiki/w/Sample',cues:[
+  {start:2,end:4,text:'[후렴] 첫 줄[3]'},{start:4,end:5,text:'[4]'},{start:7,end:9,text:'끝'}]};
+ const clean=await state.cleanWikiSnapshot(saved);
+ assert.deepEqual(Array.from(clean.cues,c=>[c.start,c.end,c.text]),[[2,4,'[후렴] 첫 줄'],[7,9,'끝']]);
+ const other={...saved,page:'https://music.youtube.com/watch?v=abcdefghijk'};
+ assert.equal(await state.cleanWikiSnapshot(other),other);
+});
 test('a registered translation does not replace a verified Korean original',async()=>{
  const {state}=player('ja');const calls=[];
  state.native=async cmd=>{
@@ -17,6 +26,19 @@ test('a registered translation does not replace a verified Korean original',asyn
  assert.equal(state.cues[0].text,'원문');assert.ok(!calls.includes('translate'));
  const snapshot=await state.lyricSnapshot('video',{});assert.equal(snapshot.originalLanguage,'ko');
  calls.length=0;await state.loadLyrics('video');assert.ok(!calls.includes('koreanOriginalForCaption'));
+});
+test('a cached Japanese translation with a verified Korean original is repaired locally once',async()=>{
+ const {state}=player('ja');
+ const ja=[{start:0,end:2,text:'日本語'},{start:3,end:4,text:'訳者 : credit'}];
+ const ko=[{start:0,end:2,text:'한국어'}];
+ await state.lyricSnapshot('video',{},{kind:'youtube',originalLanguage:'ko',cues:ja,plain:['한국어'],checkedCatalog:true,checkedCompanion:true});
+ let calls=0;
+ state.native=async (cmd,data)=>{
+  assert.equal(cmd,'alignCachedKorean');assert.deepEqual(data.cues,ja);calls++;return ko;
+ };
+ await state.loadLyrics('video');await state.loadLyrics('video');
+ assert.equal(calls,1);assert.equal(state.cues[0].text,'한국어');
+ assert.equal((await state.lyricSnapshot('video',{})).cues.length,1);
 });
 function player(lang='en',selection={}){
  const stored=new Map();
@@ -59,10 +81,11 @@ test('Signaling PC layout follows offset and pause and respects a manual caption
  state.native=async(command,value)=>{sent.push([command,value]);if(command==='caption')return {lang:'ko',text};};
  await state.loadLyrics(id);
  assert.ok(sent.some(([command])=>command==='prepareSignaling'));
- assert.deepEqual({...sent.findLast(([cmd])=>cmd==='lyrics')[1].signalingClock},{position:5.25,rate:1});
+ assert.deepEqual({...sent.findLast(([cmd])=>cmd==='lyrics')[1].signalingClock},{position:5.25,rate:1,resizeText:true});
+ state.s.style.resizeText=false;
  state.s.audio=true;state.audio={paused:true,ended:false,readyState:4,currentTime:2,playbackRate:1};
  await state.updateLyrics();
- assert.deepEqual({...sent.at(-1)[1].signalingClock},{position:2.25,rate:0});
+ assert.deepEqual({...sent.at(-1)[1].signalingClock},{position:2.25,rate:0,resizeText:false});
  sent.length=0;state.s.lyrics[id]={local:text,name:'LRC'};await state.loadLyrics(id);
  assert.equal(sent.some(([command,value])=>command==='prepareSignaling'||value?.signalingClock),false);
 });

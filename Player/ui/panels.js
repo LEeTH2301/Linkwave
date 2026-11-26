@@ -47,7 +47,7 @@ async function researchLyrics(track,old,previous,settings){
    }
   }
   const set=await native('refreshLyrics',{...request,title:track.title,provider:config.provider,allowAi:config.enabled,generation:lyricGen,
-   refreshId:ticket,keepPage:old.candidate?.page||'',duration:current===id&&typeof dur==='number'?dur:0});
+   refreshId:ticket,keepPage:old.candidate?.page||'',autoTiming:!keepYoutube && !old.disabled && !old.candidate && !old.local && !old.lang,duration:current===id&&typeof dur==='number'?dur:0});
   if(job.cancelling)return;
   if(set)await researchUpdate({id,refreshId:ticket,partial:set});
   if(refreshedKorean && set?.choices?.length && current===id && (s.audio||visibleLyrics) && s.lyrics[id]===job.selection &&
@@ -162,6 +162,7 @@ async function settings(){
  apiFonts??=await native('fonts');
  const font=select([...new Set([s.style.font,...apiFonts])].map(n=>[n,n]),s.style.font);
  const size=input(s.style.size,'number');size.min=14;size.max=64;
+ const resizeText=select([['on','켬'],['off','끔']],s.style.resizeText===false?'off':'on');
  const bold=select([['1','굵게'],['0','보통']],s.style.bold?'1':'0'),color=input(s.style.color,'color');
  const outlineColor=input(s.style.outlineColor??'#000000','color');
  const colorMode=select([['auto','썸네일 자동'],['manual','직접 지정']],s.style.autoCaptionColor===false?'manual':'auto');
@@ -252,6 +253,7 @@ async function settings(){
   alpha.parentElement.append(alphaValue);
   field(windowPage,'배경 어둡기',darkness);darkness.parentElement.append(darknessValue);
   field(appearance,'유튜브 자막 서식',source);field(appearance,'가사 글꼴',font);
+  field(appearance,'창 크기에 따라 글자 확대·축소',resizeText);
   field(appearance,'글자 크기',size);field(appearance,'굵기',bold);field(appearance,'자막 색상 모드',colorMode);field(appearance,'현재 줄 색상',color);
   field(appearance,'외곽선 색상',outlineColor);field(appearance,'외곽선 두께 (px · 0이면 끔)',outlineWidth);
   field(layout,'이전 자막 줄 수',before);field(layout,'다음 자막 줄 수',after);field(layout,'가사창 너비에 맞추기',fitWidth);
@@ -274,7 +276,7 @@ async function settings(){
   const outlines={autoCaptionColor:colorMode.value==='auto',outlineWidth:widthOf(outlineWidth),outlineColor:outlineColor.value};
   const motion={introInfo:introInfo.value==='on',scrollMotion:scrollMotion.value==='on',scrollAdjustMs:Math.max(-500,Math.min(500,Math.round(Number(scrollMs.value)||0)))};
   const rowCount=value=>value==='all'?'all':Number(value);
-  s.key=key.value.trim();s.style={...s.style,...outlines,...motion,fitWidth:fitWidth.value==='fit',thumbnailBackground:backdrop.value==='image',backgroundDarkness:Number(darkness.value)/100,bilingual:languages.value==='both',original:source.value==='original',font:font.value,size:Math.max(14,Math.min(64,Number(size.value)||30)),bold:bold.value==='1',color:color.value,alpha:Number(alpha.value)/100,before:rowCount(before.value),after:rowCount(after.value),lineGap:gap(lineGap),focusGap:gap(focusGap)};save();lastLines='';updateLyrics('follow');
+  s.key=key.value.trim();s.style={...s.style,...outlines,...motion,resizeText:resizeText.value==='on',fitWidth:fitWidth.value==='fit',thumbnailBackground:backdrop.value==='image',backgroundDarkness:Number(darkness.value)/100,bilingual:languages.value==='both',original:source.value==='original',font:font.value,size:Math.max(14,Math.min(64,Number(size.value)||30)),bold:bold.value==='1',color:color.value,alpha:Number(alpha.value)/100,before:rowCount(before.value),after:rowCount(after.value),lineGap:gap(lineGap),focusGap:gap(focusGap)};save();lastLines='';updateLyrics('follow');
   if(refresh&&current&&(s.audio||visibleLyrics))await loadLyrics(current);
  }
 }
@@ -323,6 +325,9 @@ async function chooseThumbnail(track=item(selected)||item(current)||library().it
 bind('thumbnailBtn',chooseThumbnail);
 function youtubeLanguageHint(title){
  return /[ぁ-ゖァ-ヺ]/u.test(title||'')?'ja':'';
+}
+function japaneseTranslationCredit(cues){
+ return /^\s*(?:訳者|翻訳(?:者|\s*サポート|\s*協力)?)\s*[:：]/u.test(cues.at(-1)?.text||'');
 }
 function attachOriginal(korean,source,replace=false){
  const groups=korean.map(()=>[]);
@@ -439,7 +444,16 @@ async function loadLyrics(id,updatedTrack=null,selectedLyrics=null){
   s.style?.bilingual!==false && !snapshot.checkedCompanion && !snapshot.cues.some(c=>c.originalText) &&
   snapshot.cues.some(c=>/[가-힣]/u.test(c.text));
  if(!pinned && snapshot?.kind==='youtube'){
-  if(!src?.local && !src?.auto && s.style?.bilingual!==false && !snapshot.cues.some(c=>c.originalText) &&
+  if(automatic && snapshot.originalLanguage==='ko' && snapshot.plain?.length && !snapshot.checkedKoreanTiming &&
+     japaneseTranslationCredit(snapshot.cues)){
+   const aligned=await native('alignCachedKorean',{plain:snapshot.plain,cues:snapshot.cues});
+   if(g!==lyricGen||current!==id)return;
+   if(aligned?.length)Object.assign(snapshot,{cues:aligned,message:'저장된 한국어 원문 · '+aligned.length+'개 구간',checkedCatalog:true,checkedCompanion:true});
+   snapshot.checkedKoreanTiming=true;
+   await lyricSnapshot(id,src,snapshot);
+   if(g!==lyricGen||current!==id)return;
+  }
+  if(snapshot.originalLanguage!=='ko' && !src?.local && !src?.auto && s.style?.bilingual!==false && !snapshot.cues.some(c=>c.originalText) &&
      snapshot.cues.some(c=>/[가-힣]/u.test(c.text)) && await restoreOriginal(snapshot.cues))return;
   if(g!==lyricGen||current!==id)return;
   if((!snapshot.pairVersion || id===ppppVideo && snapshot.pairVersion===1) && snapshot.message?.startsWith('유튜브 등록 자막 · ')){
@@ -490,7 +504,8 @@ async function loadLyrics(id,updatedTrack=null,selectedLyrics=null){
   if(g!==lyricGen||revision!==displayed)return;
   lastCandidate=result;
   const rank=set.choices?' · 후보 '+(choices.indexOf(result)+1)+'/'+choices.length:'';
-  if(g===lyricGen&&revision===displayed)showTranslationInfo(id,(!cues.length?'일반 가사 찾음 · 시간 정보 없음':'시간 가사 적용 완료 · '+cues.length+(result.plain?.length?'/'+result.plain.length+'줄':'개 구간'))+rank+(result.TimingNote?' · '+result.TimingNote:'')+(set.searching?' · 추가 후보 검색 중':'')+(set.warning?' · '+set.warning:''),result.page,result.plain,result.Original);
+  const source=result.publisher==='YouTube Music'?'YouTube Music · ':'';
+  if(g===lyricGen&&revision===displayed)showTranslationInfo(id,source+(!cues.length?'일반 가사 찾음 · 시간 정보 없음':'시간 가사 적용 완료 · '+cues.length+(result.plain?.length?'/'+result.plain.length+'줄':'개 구간'))+rank+(result.TimingNote?' · '+result.TimingNote:'')+(set.searching?' · 추가 후보 검색 중':'')+(set.warning?' · '+set.warning:''),result.page,result.plain,result.Original);
  }
  if(pinned){
   let candidate=selectedLyrics||snapshot?.item;
@@ -532,7 +547,8 @@ async function loadLyrics(id,updatedTrack=null,selectedLyrics=null){
   activeGenerated={id,g,apply:applyGenerated};
   await applyGenerated(cached);
   if(!snapshot)await lyricSnapshot(id,src,{kind:'generated',model:request.model,effort:request.effort});
-  if(cached.searching&&g===lyricGen){
+  const first=cached.choices?.[0];
+  if((cached.searching || automatic && first?.plain?.length && !first.cues?.length && !first.AutoTimingAttempted) && g===lyricGen){
    const final=await native('generateLyrics',request);
    if(final&&g===lyricGen)await applyGenerated(final);
   }
@@ -578,11 +594,11 @@ async function loadLyrics(id,updatedTrack=null,selectedLyrics=null){
  if(g!==lyricGen||current!==id)return;
  const dedicated=companion.length && ppppTrack(id,track);
  if(companion.length)cues=dedicated?ppppCues(companion,cues):pairYoutubeCues(companion,cues);
- showTranslationInfo(id,'자막 적용 중');lastLines='';await updateLyrics();
- if(g!==lyricGen||current!==id)return;
+ const acknowledgesTranslation=japaneseTranslationCredit(cues);
  const koreanAudio=/^ko(?:-|$)/i.test(track?.audioLanguageCode);
  if(automatic && !companion.length && track && !track.auto && !/^ko(?:-|$)/i.test(track.lang) &&
-    (koreanAudio || /^ja(?:-|$)/i.test(track.lang) && cues.filter(c=>/^[（(]?\s*[ァ-ヺ][^\n]*\n/u.test(c.text)).length>=3)){
+    (koreanAudio || (!track.audioLanguageCode || track.audioLanguageCode==='und') && /^ja(?:-|$)/i.test(track.lang) && (acknowledgesTranslation || cues.filter(c=>/^[（(]?\s*[ァ-ヺ][^\n]*\n/u.test(c.text)).length>=3))){
+  showTranslationInfo(id,'한국어 원문과 등록 자막 시각 대조 중');
   const verified=await native('koreanOriginalForCaption',{id,title:request.title,track}).catch(()=>null);
   if(g!==lyricGen||current!==id)return;
   if(verified?.cues?.length){
@@ -593,11 +609,15 @@ async function loadLyrics(id,updatedTrack=null,selectedLyrics=null){
    showTranslationInfo(id,message,verified.page);return;
   }
   if(koreanAudio){
+   lastLines='';await updateLyrics();
+   if(g!==lyricGen||current!==id)return;
    const message='한국어 음원 · '+track.label+' 자막 표시'+(verified?.plain?.length?' · 한국어 원문은 가사 보기에서 확인':'');
    await lyricSnapshot(id,src,{kind:'youtube',cues,message,page:verified?.page,plain:verified?.plain,originalLanguage:'ko',checkedCatalog:true,checkedCompanion:true});
    showTranslationInfo(id,message,verified?.page,verified?.plain);return;
   }
  }
+ lastLines='';await updateLyrics();
+ if(g!==lyricGen||current!==id)return;
  const message=cues.length?(dedicated?'PPPP 전용 자막':companion.length?'유튜브 등록 자막 · '+track.companion.label+' + '+track.label:'자막 적용 완료')+' · '+cues.length+'개 구간':'사용 가능한 등록 자막 없음';
  showTranslationInfo(id,message);
  if(!cues.length||src?.lang||src?.local||!config.enabled||/^ko(?:-|$)/i.test(track.lang)){await saveTrack(message,null,companion.length?(id===ppppVideo?2:1):null);return;}
@@ -645,7 +665,7 @@ function updateLyrics(action,amount=0){
  const time=elapsed+offset;
  if(pcOriginal && !(pcIntroRows?.length && time<pcIntroRows[0].start)){
   const advancing=media?!media.paused && !media.ended && !media.seeking && media.readyState>=3:playing;
-  const clock={position:time,rate:advancing?(media?.playbackRate||1):0};
+  const clock={position:time,rate:advancing?(media?.playbackRate||1):0,resizeText:style.resizeText!==false};
   if(style.introInfo!==false && elapsed<1){clock.intro=introCredit(item(current));clock.introUntil=1+offset;}
   const payload={...style,trackId:current,generation:lyricGen,signalingClock:clock,before:0,after:0,rows:[],
    thumbnail:s.audio===false || style.thumbnailBackground===false?-1:(s.thumbnails?.[current]??0)};
@@ -768,7 +788,7 @@ async function captionPanel(track=choice()){
  const config=translationSettings();
  const previous=await lyricSnapshot(id,old);
  const request={id,model:old.candidate?.model||previous?.model||config.model,effort:old.candidate?.effort||previous?.effort||config.effort};
- const options=[['default','자동 선택 · 등록 자막 우선 / 없으면 가사 검색'],['clear','이 곡의 자막 끄기']];
+ const options=[['default','자동 선택 · 유튜브 등록 자막 → YouTube Music → 다른 출처'],['clear','이 곡의 자막 끄기']];
  if(id===ppppVideo)options.unshift(['pppp','PPPP 전용 자막 · 일본어 + 한국어 구절 강조']);
  if(id===loopRoomVideo)options.unshift(['loopRoom','루프 더 룸 전용 자막 · 원곡 일본어 + 등록 한국어 색상']);
  if(pcSongNames[id])options.unshift(['signaling',pcSongNames[id]+' · 일본어 + 한국어 줄 자막'],['signalingPc',pcSongNames[id]+' · PC 원본 배치']);

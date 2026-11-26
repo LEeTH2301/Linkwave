@@ -113,6 +113,15 @@ internal static class Program
             timer.Tick+=(_,_)=>{timer.Stop();frame.Continue=false;};timer.Start();Dispatcher.PushFrame(frame);
         }
         Display(0,false);Pump(50);
+        double ScreenEm(){
+            var caption=Caption(0);
+            return caption.PointToScreen(new Point(0,caption.Text.FontSize)).Y-caption.PointToScreen(new Point()).Y;
+        }
+        double initialEm=ScreenEm();
+        view.ResizeWithWindow(new Size(445,246.5),true);view.UpdateLayout();
+        Check(Math.Abs(ScreenEm()-initialEm*.5)<1,"halving the overlay halves displayed text");
+        view.ResizeWithWindow(new Size(445,246.5),false);view.UpdateLayout();
+        Check(Math.Abs(ScreenEm()-initialEm)<1,"turning resizing off restores the configured size");
         Display(1);Pump(130);
         Check(Scale(0)>1 && Scale(1) is >.7 and <1,"previous shrinks and current grows");
         Check(Ink(0).G is >0 and <220 && Ink(1).G is >0 and <220,"both foregrounds blend");

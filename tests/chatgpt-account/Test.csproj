@@ -4,4 +4,5 @@
   <ItemGroup><Compile Include="../../Player/AlsongLyrics.cs;../../Player/VocalLyrics.cs;../../Player/ReferenceTiming.cs;../../Player/ScreenLyrics.cs" /></ItemGroup>
   <ItemGroup><Compile Include="../../Player/SavedSpeechTiming.cs" /></ItemGroup>
   <ItemGroup><Compile Include="../../Player/KoreanWikiLyrics.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../Player/YouTubeMusicLyrics.cs" /></ItemGroup>
 </Project>

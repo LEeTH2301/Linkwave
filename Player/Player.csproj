@@ -9,11 +9,12 @@
     <Nullable>enable</Nullable>
     <PlatformTarget>x64</PlatformTarget>
     <AssemblyName>Linkwave</AssemblyName>
-    <Version>0.1.2</Version>
+    <Version>0.1.3</Version>
   </PropertyGroup>
   <ItemGroup>
     <Using Remove="System.Drawing;System.Windows.Forms" />
     <EmbeddedResource Include="Linkwave.ico" LogicalName="Linkwave.ico" />
+    <EmbeddedResource Include="music-offline.js" LogicalName="Linkwave.MusicOffline.js" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3537.50" />
     <Content Include="ui/**/*;tools/**/*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

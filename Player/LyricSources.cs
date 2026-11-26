@@ -10,7 +10,7 @@ internal sealed partial class CaptionTranslation
 {
     sealed record LyricSite(string Label,string[] Domains,string Guidance);
     static readonly LyricSite Namu=new("나무위키 곡명·가사 검색",["namu.wiki"],
-        "나무위키 내부 검색 결과와 제공된 관련 문서를 모두 확인한다. 같은 곡의 OST·캐릭터·작품 문서에 각각 가사가 있으면 모두 반환한다.");
+        "나무위키 내부 검색 결과와 제공된 관련 문서를 모두 확인한다. 같은 곡의 OST·캐릭터·작품 문서에 각각 가사가 있으면 모두 반환한다. 각주 번호와 각주 설명은 가사에서 제외한다.");
     const string CommunityGuidance="곡명과 가사·번역·해석 키워드로 해당 작품의 커뮤니티를 검색한다. 검색된 개별 게시글을 열고 글쓴이가 본문에 실은 같은 버전의 가사 전문을 확인한다. 원문에 대응하는 기존 한국어 번역이 있으면 그 번역을 사용한다. 해설·댓글·인용·개사·다른 곡은 제외하고, 본문을 읽을 수 없으면 결과를 비운다. ";
     static readonly LyricSite DcInside=new("디시인사이드 갤러리 가사 검색",["gall.dcinside.com","m.dcinside.com"],
         CommunityGuidance+"곡과 관련된 디시인사이드 갤러리에서 찾는다.");
@@ -69,7 +69,7 @@ internal sealed partial class CaptionTranslation
         async Task<Candidate> ReadCandidate(string url){
             var html=await PublicPage(url,token);
             var body=Regex.Replace(html,@"<(script|style)\b[^>]*>.*?</\1>"," ",RegexOptions.Singleline|RegexOptions.IgnoreCase);
-            body=WebUtility.HtmlDecode(Regex.Replace(body,"<[^<>]*>"," ")).Replace('’','\'');
+            body=WikiLine(WebUtility.HtmlDecode(Regex.Replace(WithoutWikiNotes(body),"<[^<>]*>"," "))).Replace('’','\'');
             body=Regex.Replace(body,@"\s+"," ");
             var match=body.LastIndexOf(title.Replace('’','\''),StringComparison.OrdinalIgnoreCase);
             var excerpt=match<0?"":body.Substring(Math.Max(0,match-160),Math.Min(body.Length-Math.Max(0,match-160),5500));
@@ -95,18 +95,19 @@ internal sealed partial class CaptionTranslation
             if(original.Length==0 && (SourceUri(page) is not {} uri || !uri.AbsolutePath.StartsWith("/w/") ||
                 CatalogTitle(Uri.UnescapeDataString(uri.AbsolutePath[3..]))!=CatalogTitle(documentTitle)))return null;
             if(KoreanWikiLines(html,id,documentTitle) is {} lines){
+                var audioLanguage=Captions.SongFor(id,title,0).language;
                 foreach(var track in await Captions.RegisteredSaved(id,token)){
-                    var timed=MatchKoreanReading(lines,track);
-                    if(timed.Length>0)return new Generated(timed,page){Original=lines,OriginalSource=page,OriginalLanguage="ko",TimingNote="한국어 원문 · 등록 자막 발음과 시각 일치"};
+                    var timed=MatchKoreanReading(lines,track with {audioLanguageCode=audioLanguage??track.audioLanguageCode});
+                    if(timed.Length>0)return new Generated(timed,page){Original=lines,OriginalSource=page,OriginalLanguage="ko",TimingNote="한국어 원문 · 등록 자막 대조로 시각 확인"};
                 }
-                bool korean=Captions.SongFor(id,title,0).language?.Split('-')[0]=="ko" ||
+                bool korean=audioLanguage?.Split('-')[0]=="ko" ||
                     song?.lyrics?.Any(l=>l.translationType=="Original" && l.cultureCodes?.Contains("ko")==true && Normalize(l.value??"")==Normalize(string.Concat(lines)))==true;
                 return new Generated([],page,lines){Original=korean?lines:null,OriginalSource=korean?page:null,OriginalLanguage=korean?"ko":null};
             }
             Generated? single=null;
-            foreach(Match table in Regex.Matches(html,@"<table\b[^>]*>(.*?)</table>",RegexOptions.Singleline|RegexOptions.IgnoreCase)){
+            foreach(Match table in Regex.Matches(WithoutWikiNotes(html),@"<table\b[^>]*>(.*?)</table>",RegexOptions.Singleline|RegexOptions.IgnoreCase)){
                 var rows=Regex.Matches(table.Groups[1].Value,@"<tr\b[^>]*>(.*?)</tr>",RegexOptions.Singleline|RegexOptions.IgnoreCase)
-                    .Select(m=>(jp:Regex.IsMatch(m.Value,"\\blang=['\"]ja['\"]"),text:WebUtility.HtmlDecode(Regex.Replace(m.Groups[1].Value,"<[^>]+>","")).Trim())).ToArray();
+                    .Select(m=>(jp:Regex.IsMatch(m.Value,"\\blang=['\"]ja['\"]"),text:WikiText(m.Groups[1].Value))).Where(row=>row.text.Length>0).ToArray();
                 var ja=new List<string>();var ko=new List<string>();
                 for(int i=0;i+2<rows.Length;i++){
                     if(!rows[i].jp || rows[i+1].jp || rows[i+2].jp || !Regex.IsMatch(rows[i+1].text,"[가-힣]") || !Regex.IsMatch(rows[i+2].text,"[가-힣]"))continue;

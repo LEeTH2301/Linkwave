@@ -12,6 +12,7 @@ chrome.webview.addEventListener('message',({data})=>{
  if(data.eventName==='lyricCandidates'){if(data.id===current&&data.generation===lyricGen)guard(()=>searchPreview?.(data));return;}
  if(data.eventName==='captionProgress'){if(data.id===current&&data.generation===lyricGen)searchProgress(data.id,data.message);return;}
  if(data.eventName==='audioCache'){setCacheState(data.id,data.state);return;}
+ if(data.eventName==='musicOfflineProgress'){offlineProgress(data);return;}
  if(data.eventName==='progress'){$('jobText').textContent=data.line;return;}
  if(data.eventName==='minimized'){if(!s.audio&&!videoView?.floating)pause();return;}
  if(data.eventName==='trayControl'){if(s)guard(()=>playbackCommand(data.action,data.value));return;}
@@ -25,6 +26,95 @@ let s,db,selected=null,current=null,frame=null,audio=null,generation=0,playing=f
 let failed=new Set();const queue=new Queue();
 let videoView=null,videoTicket=0,closingVideo=null,videoLyricsGeneration=-1;
 let lastTrayState='',volumeRevision=0;
+let musicView=null;
+function updateMusicToggle(){
+ const button=$('musicPaneToggle');
+ button.hidden=!musicView;
+ button.textContent=musicView?.shown?'Music 화면 숨기기':'Music 화면 보기';
+ button.setAttribute('aria-expanded',String(!!musicView?.shown));
+}
+async function showMusicPane(view,shown,remember){
+ if(musicView!==view)return;
+ view.shown=shown;
+ if(remember){view.loginReveal=false;s.showMusicPane=shown;save();}
+ updateMusicToggle();
+ await native('musicPaneShow',{session:view.session,shown});
+}
+bind('musicPaneToggle',()=>musicView&&showMusicPane(musicView,!musicView.shown,true));
+function musicCommand(view,action,value=0){
+ return native('musicPaneCommand',{session:view.session,action,value});
+}
+function closeMusic(){
+ const view=musicView;if(!view)return;
+ musicView=null;clearTimeout(view.timer);clearTimeout(view.cacheTimer);updateMusicToggle();
+ void native('musicPaneClose',{session:view.session}).catch(()=>{});
+}
+async function startMusic(id,session,offset,auto,signIn=false,offline=false){
+ const view={session,wantPlay:auto,offset,ready:false,timer:null,shown:signIn||!!s.showMusicPane,loginReveal:signIn&&!s.showMusicPane};
+ musicView=view;updateMusicToggle();
+ let started=performance.now(),loadedLyrics=false,advanced=false;
+ async function fallback(slow=false){
+  if(musicView!==view)return;
+  const resume=pos,play=view.ready?playing||view.wantPlay:view.wantPlay;
+  closeMusic();playing=false;
+  $('modeName').textContent='Linkwave 오디오';
+  let message=slow?'Music 저장본이 늦어 기존 저장 음원으로 전환했습니다.':'Music에서 재생할 수 없어 Linkwave 오디오로 전환했습니다.';
+  try{await connectAudio(id,session,resume,play,[]);}
+  catch{message='이 곡의 저장 음원과 스트림을 열 수 없습니다. Music 계정을 연결해 다시 재생할 수 있습니다.';}
+  if(session===generation){
+   notice(message,()=>start(id,pos,true,true,!slow));
+   if(!slow)$('again').textContent='앱 안에서 Music 계정 연결';
+  }
+ }
+ async function poll(){
+  if(musicView!==view)return;
+  try{
+   const state=await musicCommand(view,'state');
+   if(musicView!==view)return;
+   if(state?.account && view.shown){started=performance.now();}
+   else if(state?.ready){
+
+    if(!view.ready){
+     if(offline && (view.offset || state.position>0))await musicCommand(view,'seek',view.offset);
+     await musicCommand(view,'volume',playbackVolume());
+     if(!offline && view.offset)await musicCommand(view,'seek',view.offset);
+     await musicCommand(view,view.wantPlay?'play':'pause');
+     if(musicView!==view)return;
+     view.ready=true;started=performance.now();
+     if(view.loginReveal){view.loginReveal=false;await showMusicPane(view,false,false);}
+    }else{
+     if(state.ended){await advance(false);return;}
+     if(state.playing && state.position>pos+.02){advanced=true;clearTimeout(view.cacheTimer);}
+     pos=state.position;dur=state.duration;playing=state.playing;transport();
+     if(!loadedLyrics && (advanced||!view.wantPlay)){loadedLyrics=true;void loadLyrics(id);}
+     if(!advanced && view.wantPlay && performance.now()-started>12000){await fallback();return;}
+    }
+   }else if(state?.other && view.ready && dur && pos>=dur-2){await advance(false);return;}
+   else if((state?.denied && performance.now()-started>3500) || performance.now()-started>(offline?22000:12000)){await fallback();return;}
+   view.timer=setTimeout(()=>guard(poll),offline&&!view.ready?80:250);
+  }catch(e){if(musicView===view)await fallback();else if(session===generation)throw e;}
+ }
+ if(offline && cacheStates.get(id)==='ready'){
+  view.cacheTimer=setTimeout(()=>{if(musicView===view&&!advanced&&view.wantPlay)guard(()=>fallback(true));},4000);
+ }
+ try{await native('musicPaneOpen',{id,session,signIn,shown:view.shown,offline});}catch{await fallback();return;}
+ await poll();
+}
+function playMusic(track){
+ if(!track)return;
+ if(musicView && current===track.id && playing)return;
+ s.audio=true;s.useMusicPane=true;save();return start(track.id,0,true,false,false,true);
+}
+function playInsideVideo(track){
+ if(!track)return;
+ s.audio=false;s.useMusicPane=false;save();return start(track.id);
+}
+function controlMusic(action,value){
+ const view=musicView;if(!view)return;
+ if(action==='play'||action==='pause')view.wantPlay=action==='play';
+ if(action==='seek')view.offset=value;
+ if(view.ready)return musicCommand(view,action,value);
+}
 function playbackVolume(){
  return Number.isFinite(s?.volume)?Math.max(0,Math.min(100,Math.round(s.volume))):100;
 }
@@ -43,13 +133,62 @@ function setVolume(level,fromVideo=false){
  if(!s || !Number.isFinite(level))return;
  s.volume=Math.max(0,Math.min(100,Math.round(level)));displayVolume();syncTray();
  if(audio)audio.volume=s.volume/100;
+ if(musicView?.ready)void musicCommand(musicView,'volume',s.volume).catch(()=>{});
  if(videoView && !fromVideo)sendVideo({action:'volume',level:s.volume,revision:++volumeRevision});
 }
 $('volume').oninput=()=>setVolume(Number($('volume').value));
 $('volume').onchange=()=>{if(s)save();};
 const sources=new AudioSources((id,tried)=>native('stream',{id,tried}),()=>native('stopStream').catch(()=>{}));
 const cacheStates=new Map();
-const diskQueue=new AudioCacheQueue(id=>!['ready','saving'].includes(cacheStates.get(id)),
+const musicFiles=new Set();
+const offlineMusic=new Set();
+let offlineJob=null;
+function offlineProgress({index,total,id,message,phase}){
+ const job=offlineJob;if(!job)return;
+ if(phase==='verified'){offlineMusic.add(id);job.saved++;render();}
+ else if(phase==='failed')job.failures.push((job.titles.get(id)||id)+' · '+message);
+ if(phase!=='working' && s.pendingMusicOffline?.includes(id)){
+  s.pendingMusicOffline=s.pendingMusicOffline.filter(track=>track!==id);save();
+ }
+ $('musicOfflineStatus').textContent=index+'/'+total+' · '+(job.titles.get(id)||id)+' · '+message;
+}
+async function saveOfflineTracks(list,automatic=false){
+ const ids=[...new Set(list.map(t=>t.id))];
+ const job={saved:0,failures:[],titles:new Map(list.map(t=>[t.id,trackName(t)]))};
+ offlineJob=job;
+ const status=$('musicOfflineStatus');
+ status.hidden=false;status.textContent='Music 고음질 설정 확인 중…';
+ $('musicOfflineSave').textContent='저장 취소';
+ try{
+  await native('musicOfflineSave',{ids,automatic});
+  status.textContent=ids.length+'곡 중 '+job.saved+'곡 고음질 확인'+(job.failures.length?' · '+job.failures.length+'곡 실패 · '+job.failures[0]:'');
+  if(job.saved===0 && job.failures.length<ids.length && ids.length>1)status.textContent+=' · 나머지 곡 대기';
+ }catch(e){
+  status.textContent=(e.message==='취소됨'?'저장 취소':e.message)+' · '+job.saved+'곡 확인';
+  if(e.message.includes('계정')){
+   notice(e.message,()=>{const track=library().items[0];if(!track)return;s.audio=s.useMusicPane=true;save();return start(track.id,0,false,true,true);});
+   $('again').textContent='앱 안에서 Music 계정 연결';
+  }
+  return;
+ }
+ finally{status.title=job.failures.join('\n');offlineJob=null;$('musicOfflineSave').textContent='목록 고음질 저장';}
+ void drainOfflineTracks();
+}
+function drainOfflineTracks(){
+ if(offlineJob || !offlineMusic.size || !s.pendingMusicOffline?.length)return;
+ const all=new Map(s.lists.flatMap(l=>l.items.map(t=>[t.id,t])));
+ const list=s.pendingMusicOffline.filter(id=>all.has(id)&&!offlineMusic.has(id)).map(id=>all.get(id));
+ if(list.length!==s.pendingMusicOffline.length){s.pendingMusicOffline=list.map(t=>t.id);save();}
+ if(list.length)return saveOfflineTracks(list,true);
+}
+bind('musicOfflineSave',async()=>{
+ if(offlineJob){s.pendingMusicOffline=[];save();await native('musicOfflineCancel');return;}
+ const list=library().items;
+ if(!list.length)return;
+ const first=list.find(t=>t.id===selected)||list.find(t=>offlineMusic.has(t.id))||list[0];
+ return saveOfflineTracks([first,...list.filter(t=>t.id!==first.id)]);
+});
+const diskQueue=new AudioCacheQueue(id=>!['ready','saving','failed'].includes(cacheStates.get(id)),
  id=>s.lists.some(list=>list.items.some(track=>track.id===id)),storeAudio);
 const thumbnailCovers=new Set(),coverJobs=new Map();
 const coverQueue=new AudioCacheQueue(id=>!thumbnailCovers.has(id),id=>s.lists.some(l=>l.items.some(t=>t.id===id)),
@@ -64,20 +203,29 @@ function trackArtwork(slot,id){
  const image=el('img');image.alt='';image.draggable=false;image.loading='lazy';image.src=thumbnailUrl(id,pick);
  slot.replaceChildren(image);
 }
+function updateDeckCover(id){
+ const pick=s.thumbnails?.[id]??0;
+ const url=id && pick>=0 && (pick>0 || thumbnailCovers.has(id))?thumbnailUrl(id,pick):'';
+ const image=$('deckCover');
+ image.hidden=!url;
+ if(url && image.src!==url)image.src=url;
+}
+function trackCredit(track){return track?.artist||track?.channel||'';}
 function cacheCover(id){
  if(coverJobs.has(id))return coverJobs.get(id);
  const job=native('thumbnailCover',{id}).then(()=>{
   thumbnailCovers.add(id);
   for(const row of $('tracks').children)if(row.dataset.id===id)trackArtwork(row.firstElementChild,id);
-  if(current===id){lastLines='';updateLyrics();}
+  if(current===id){updateDeckCover(id);lastLines='';updateLyrics();}
  }).finally(()=>coverJobs.delete(id));
  coverJobs.set(id,job);return job;
 }
 function trackStatus(id){
- const status=diskQueue.waiting.has(id)?'저장 대기':{ready:'저장됨',saving:'저장 중',failed:'저장 실패'}[cacheStates.get(id)];
+ const status=offlineMusic.has(id)?'Music 고음질 오프라인':musicFiles.has(id)?'Music 음원 저장됨':diskQueue.waiting.has(id)?'저장 대기':{ready:'저장됨',saving:'저장 중',failed:'캐시 사용 불가'}[cacheStates.get(id)];
  return [id===current?'재생 트랙':'',status].filter(Boolean).join(' · ');
 }
 function setCacheState(id,state){
+ if(state==='music'){musicFiles.add(id);state='ready';}
  cacheStates.set(id,state);
  for(const row of $('tracks').children)if(row.dataset.id===id)row.lastElementChild.textContent=trackStatus(id);
 }
@@ -93,7 +241,7 @@ const fresh=()=>({
  lists:[{name:'내 재생목록',id:crypto.randomUUID(),items:[]}],active:null,key:'',audio:true,shuffle:false,repeat:0,lyrics:{},showLyricsOnStartup:true,
  style:{
   font:'맑은 고딕',size:36,bold:true,color:'#fcffcc',original:true,autoCaptionColor:true,outlineColor:'#000000',outlineWidth:1.5,
-  alpha:.6,backgroundDarkness:.5,thumbnailBackground:true,bilingual:true,fitWidth:true,
+  alpha:.6,backgroundDarkness:.5,thumbnailBackground:true,bilingual:true,fitWidth:true,resizeText:true,
   before:'all',after:'all',lineGap:10,focusGap:15,scrollMotion:true,scrollAdjustMs:-50,introInfo:true
  }
 });
@@ -111,7 +259,11 @@ async function init(){
   render();
   coverQueue.enqueue(s.lists.flatMap(list=>list.items.map(track=>track.id)));
  }).catch(()=>coverQueue.enqueue(s.lists.flatMap(list=>list.items.map(track=>track.id))));
- for(const id of await native('cachedAudioList'))if(!cacheStates.has(id))cacheStates.set(id,'ready');
+ for(const id of await native('cachedAudioList').catch(()=>[]))if(!cacheStates.has(id))cacheStates.set(id,'ready');
+ for(const id of await native('cachedMusicList').catch(()=>[])||[])setCacheState(id,'music');
+ for(const id of await native('musicOfflineList').catch(()=>[])||[])offlineMusic.add(id);
+ if(offlineMusic.size)void native('musicPaneWarm').catch(()=>{});
+ void drainOfflineTracks();
  diskQueue.enqueue(s.lists.flatMap(list=>list.items.map(track=>track.id)));
  render();
 }
@@ -122,7 +274,7 @@ function lyricSnapshot(id,selection,value){
  return new Promise((resolve,reject)=>{
   const tx=db.transaction('settings',value===undefined?'readonly':'readwrite'),store=tx.objectStore('settings');
   const req=value===undefined?store.get(key):store.put(value,key);
-  tx.oncomplete=()=>resolve(req.result);
+  tx.oncomplete=()=>resolve(value===undefined?cleanWikiSnapshot(req.result):req.result);
   tx.onabort=()=>reject(tx.error||Error('자막 저장소를 읽거나 쓸 수 없습니다.'));
  });
 }
@@ -135,10 +287,14 @@ function render(){
  $('up').disabled=selectedIndex<=0;$('down').disabled=selectedIndex<0||selectedIndex===l.items.length-1;
  $('shuffle').textContent=s.shuffle?'랜덤 켬':'랜덤 끔';$('shuffle').setAttribute('aria-pressed',s.shuffle);
  $('repeat').textContent=['반복 끔','한 곡 반복','목록 반복'][s.repeat];$('repeat').setAttribute('aria-pressed',s.repeat!==0);
- $('mode').textContent=s.audio?'영상 모드로':'MP3 모드로';$('modeName').textContent=s.audio?'MP3 스트리밍':'영상 모드';
+ $('mode').textContent=s.audio&&!s.useMusicPane?'영상 모드로':'MP3 모드로';
+ $('modeName').textContent=!s.audio?'영상 모드':musicView&&offlineMusic.has(current)?'Music 고음질 오프라인':musicView?'YouTube Music':s.useMusicPane?'Linkwave 오디오':'MP3 스트리밍';
  $('mini').disabled=s.audio;$('mini').textContent=mini?'기본 화면으로':'영상 미니창';$('lyricsBtn').setAttribute('aria-pressed',visibleLyrics);
  $('thumbnailBtn').disabled=!l.items.length;
- $('deckTitle').textContent=trackName(item(current))||'재생할 곡을 선택하세요';$('playingTitle').textContent=trackName(item(current))||'재생 대기';transport();
+ const track=item(current);
+ $('deckTitle').textContent=trackName(track)||'재생할 곡을 선택하세요';
+ $('deckCredit').textContent=trackCredit(track);updateDeckCover(current);
+ $('playingTitle').textContent=trackName(track)||'재생 대기';transport();
 }
 let trackDrag=null;
 function openTrackMenu(event,row,list,track){
@@ -161,7 +317,8 @@ function openTrackMenu(event,row,list,track){
  menu.replaceChildren(
   action('자막 선택',()=>captionPanel(track)),
   action('썸네일 고르기',()=>chooseThumbnail(track)),
-  action('YouTube에서 열기',()=>native('browser',{id:track.id})),
+  action('영상으로 재생',()=>playInsideVideo(track)),
+  action('YouTube Music으로 재생',()=>playMusic(track)),
   action('음원 추출',()=>extract(track),exporting),
   action('곡 이름 변경',()=>renameTrack(list,track)),
   action('위로 이동',()=>shift(-1),index===0),
@@ -185,7 +342,9 @@ function renderTracks(l){
   const b=el('button');b.dataset.id=v.id;b.className='track'+(v.id===selected?' active':'');
   b.setAttribute('role','option');b.setAttribute('aria-selected',v.id===selected);
   const slot=el('span',String(i+1).padStart(2,'0'));trackArtwork(slot,v.id);
-  b.append(slot,el('span',trackName(v)),el('small',trackStatus(v.id)));
+  const label=el('div');label.className='trackLabel';label.append(el('div',trackName(v)));
+  if(trackCredit(v))label.append(el('small',trackCredit(v)));
+  b.append(slot,label,el('small',trackStatus(v.id)));
   b.draggable=true;b.title='오른쪽 클릭으로 곡 메뉴 열기 · 드래그로 순서 변경 · F2 이름 변경 · Delete 곡 삭제';
   b.setAttribute('aria-haspopup','menu');
   b.oncontextmenu=e=>openTrackMenu(e,b,l,v);
@@ -240,9 +399,14 @@ async function add(){
    const dest=select([['here',target.name],['new','새 목록으로 저장']],'here'),name=input('가져온 목록');
    if(!await dialog('가져오기 · '+entries.length+'곡',b=>{b.append(el('pre',entries.map((x,i)=>(i+1)+'. '+x.title).join('\n')));field(b,'저장할 목록',dest);field(b,'새 목록 이름',name);},'목록에 추가')){$('notice').hidden=true;return;}
    if(dest.value==='new'){destination={id:crypto.randomUUID(),name:name.value.trim()||'가져온 목록',items:[]};s.lists.push(destination);stop();selected=null;s.active=destination.id;}
- }else{let info;try{info=await native('info',{id,key:s.key});}catch{}entries=[{id,title:info?.title||id,channel:info?.channel||''}];}
- const seen=new Set(destination.items.map(x=>x.id));let added=0;
- for(const x of entries){if(seen.has(x.id))continue;destination.items.push({...x,fetched:Date.now()});seen.add(x.id);added++;}
+ }else{let info;try{info=await native('info',{id,key:s.key});}catch{}entries=[{id,title:info?.title||id,channel:info?.channel||'',artist:info?.artist||''}];}
+ const seen=new Set(destination.items.map(x=>x.id)), newlyAdded=[];
+ for(const x of entries){if(seen.has(x.id))continue;destination.items.push({...x,fetched:Date.now()});seen.add(x.id);newlyAdded.push(x.id);}
+ const added=newlyAdded.length;
+ if(offlineMusic.size && added){
+  s.pendingMusicOffline=[...new Set([...(s.pendingMusicOffline||[]),...newlyAdded])];
+  void drainOfflineTracks();
+ }
  if(library()===destination&&!selected)selected=destination.items[0]?.id;
  diskQueue.enqueue(entries.map(track=>track.id),!entire);
  coverQueue.enqueue(entries.map(track=>track.id),!entire);
@@ -275,42 +439,53 @@ function removeTrack(list,track){
 bind('up',()=>move(-1));bind('down',()=>move(1));
 bind('renameTrack',()=>renameTrack(library(),choice()));bind('remove',()=>removeTrack(library(),choice()));
 function clearMedia(){++generation;++lyricGen;native('stopTranslation').catch(()=>{});translationInfo=null;$('captionSummary').hidden=true;cues=[];lastLines='';if(audio){audio.onended=audio.onerror=audio.onpause=audio.onplay=audio.ontimeupdate=audio.onloadedmetadata=null;audio.pause();audio.removeAttribute('src');audio.load();audio=null;}
- detachVideo();playing=false;dur=0;pos=0;}
+ closeMusic();detachVideo();playing=false;dur=0;pos=0;}
 function stop(){sources.stop();clearMedia();current=null;queue.reset(null);failed.clear();transport();}
 let startingGeneration=null;
 function playTrack(id){
  if(id!==current)return start(id);
  if(playing||startingGeneration===generation)return;
  if(audio)return audio.play();
+ if(musicView)return controlMusic('play');
  if(videoView)return video('play');
  return start(id);
 }
-async function start(id,offset=0,auto=true,continueQueue=false){
+async function start(id,offset=0,auto=true,continueQueue=false,musicSignIn=false,requestMusicStream=false){
  const track=item(id);if(!track)return;
  clearMedia();const g=generation;startingGeneration=g;current=selected=id;
  if(!continueQueue){queue.reset(id);failed.clear();}pos=offset;render();$('notice').hidden=true;
  try{
+  if(!trackCredit(track) || !track.title || track.title===id){
+   void native('info',{id,key:''}).then(info=>{
+    if(!info || !s.lists.some(list=>list.items.includes(track)))return;
+    if(info.title)track.title=info.title;
+    if(info.channel)track.channel=info.channel;
+    if(info.artist)track.artist=info.artist;
+    track.fetched=Date.now();save();render();
+   }).catch(()=>{});
+  }
   if(s.audio){
-   await connectAudio(id,g,offset,auto,[]);
+   if(offlineMusic.has(id)&&!musicSignIn){$('modeName').textContent='Music 고음질 오프라인';await startMusic(id,g,offset,auto,false,true);}
+   else if(musicSignIn || (s.useMusicPane&&!musicFiles.has(id)&&(requestMusicStream||cacheStates.get(id)!=='ready'))){
+    $('modeName').textContent='YouTube Music';await startMusic(id,g,offset,auto,musicSignIn);
+   }
+   else await connectAudio(id,g,offset,auto,[]);
   }else{
    sources.stop();
-   if(!track.title || track.title===id){
-    void native('info',{id,key:''}).then(info=>{
-     if(g!==generation || item(id)!==track || !info?.title)return;
-     track.title=info.title;track.fetched=Date.now();save();render();
-    }).catch(()=>{});
-   }
    await mountVideo(id,offset,auto);
   }
  }catch(e){if(g===generation){if(!s.audio&&e.message.includes('비공개'))skipError(e.message);else notice(e.message,()=>start(id,offset,auto,true));}}
  finally{if(startingGeneration===g)startingGeneration=null;}
 }
 async function connectAudio(id,g,offset,auto,tried){
- notice(tried.length?'다른 오디오 포맷으로 연결하는 중…':'오디오 스트림을 확인하는 중…');
- const disk=tried.includes('disk')?null:await native('cachedAudio',{id});
+ const disk=tried.includes('disk')?null:await native('cachedAudio',{id,skipMusic:tried.includes('diskMusic')}).catch(()=>{
+  setCacheState(id,'failed');return null;
+ });
  if(g!==generation)return;
  if(!disk&&cacheStates.get(id)==='ready')setCacheState(id,null);
- const source=disk||await sources.get(id,tried);
+ const local=disk?.music && tried.includes('diskMusic')?null:disk;
+ if(!local)notice(tried.length?'다른 오디오 포맷으로 연결하는 중…':'오디오 스트림을 확인하는 중…');
+ const source=local||await sources.get(id,tried);
  if(g!==generation)return;
  const media=new Audio();audio=media;media.volume=playbackVolume()/100;media.preload='auto';
  const loadTrackLyrics=()=>{if(g===generation&&audio===media)loadLyrics(id);};
@@ -323,12 +498,11 @@ async function connectAudio(id,g,offset,auto,tried){
   media.onplay=media.onpause=media.onended=media.onerror=media.ontimeupdate=media.onloadedmetadata=null;
   media.pause();media.removeAttribute('src');media.load();audio=null;
   if(source.local){
-   setCacheState(id,'failed');
-   try{await native('invalidateAudio',{id});}catch{}
-   if(g!==generation)return;
+   if(source.music)musicFiles.delete(id);
+   setCacheState(id,source.music?null:'failed');
   }
   sources.entries.delete(id);
-  const attempted=source.reused?tried:[...tried,source.format];
+  const attempted=source.reused?tried:[...tried,source.music?'diskMusic':source.format];
   if(attempted.length<3){
    try{await connectAudio(id,g,resume,resumePlaying,attempted);return;}
    catch(e){if(g!==generation)return;}
@@ -413,8 +587,9 @@ function loadVideoLyrics(){
   videoLyricsGeneration=generation;void loadLyrics(current);
  }
 }
-function pause(){if(audio)audio.pause();else video('pause');}
-function skipError(msg){const bad=current;failed.add(bad);guard(async()=>{await advance(true,true);notice(msg+' · YouTube에서 확인할 수 있습니다.');$('again').textContent='YouTube 열기';$('again').hidden=false;$('again').onclick=()=>native('browser',{id:bad});});}
+function pause(){if(musicView)return controlMusic('pause');if(audio)audio.pause();else video('pause');}
+function skipError(msg){const id=current;if(!id)return;s.audio=true;s.useMusicPane=false;save();
+ guard(async()=>{await start(id,pos,true,true);if(current===id&&audio)notice(msg+' · Linkwave 오디오로 전환했습니다.');});}
 addEventListener('message',e=>{
  if(e.origin!=='https://embed.linkwave.example'||!frame||e.source!==frame.contentWindow)return;
  videoEvent(e.data);
@@ -450,9 +625,9 @@ async function playbackCommand(action,value){
  const first=item(selected)?.id||library().items[0]?.id;
  switch(action){
   case 'play':
-   if(!current || (selected && selected!==current) || (!videoView&&!audio))return first && start(first);
+   if(!current || (selected && selected!==current) || (!videoView&&!audio&&!musicView))return first && start(first);
    if(playing || (videoView && !videoView.ready && videoView.play))return pause();
-   return audio?audio.play():video('play');
+   return musicView?controlMusic('play'):audio?audio.play():video('play');
   case 'next':return current?advance(true):first && start(first);
   case 'stop':stop();render();break;
   case 'prev':{
@@ -469,12 +644,13 @@ async function playbackCommand(action,value){
 }
 for(const action of ['play','next','prev','shuffle','repeat'])bind(action,()=>playbackCommand(action));
 function seekTo(time){
- if(!Number.isFinite(time)||(!audio&&!videoView))return;
+ if(!Number.isFinite(time)||(!audio&&!videoView&&!musicView))return;
  const target=Math.max(0,Math.min(time,dur||Infinity));
- if(audio)audio.currentTime=target;else video('seek',target);
+ if(musicView)void guard(()=>controlMusic('seek',target));else if(audio)audio.currentTime=target;else video('seek',target);
  pos=target;updateLyrics('follow');transport();
 }
 $('seek').oninput=()=>seeking=true;$('seek').onchange=()=>{seeking=false;seekTo(Number($('seek').value));};
-bind('mode',async()=>{const id=current,t=pos,go=videoView?.play??(playing||!audio);s.audio=!s.audio;save();render();if(id)await start(id,t,go,true);else if(s.audio&&selected)prepareSelected(selected);});
+bind('mode',async()=>{const id=current,t=pos,go=musicView?.wantPlay??videoView?.play??(playing||!audio);s.audio=!!s.useMusicPane||!s.audio;s.useMusicPane=false;save();render();if(id)await start(id,t,go,true);else if(s.audio&&selected)prepareSelected(selected);});
 bind('mini',async()=>{if(!mini&&visibleLyrics)await showLyricsWindow(false);await native('mini',{on:!mini});mini=!mini;document.body.classList.toggle('mini',mini);render();});
-bind('browser',()=>native('browser',{id:choice().id}));
+bind('browser',()=>playInsideVideo(choice()));
+bind('musicBrowser',()=>playMusic(choice()));

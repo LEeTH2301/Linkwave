@@ -14,3 +14,15 @@ body{grid-template-rows:minmax(0,1fr) 98px auto}#captionSummary{grid-column:1/-1
 .settingsFields{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:8px 14px;align-items:start}
 .settingsFields label{margin:0;min-width:0}.settingsFields select{min-width:0}
 .settingsFields+div{margin-top:14px;max-height:200px;overflow:auto}
+#deck{container-type:inline-size}
+#empty{isolation:isolate;justify-content:flex-start;gap:clamp(14px,3.5cqw,32px);padding:clamp(16px,4cqw,40px)}
+#deckCover{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:-2}
+#deckCover:not([hidden])~.deckInfo{text-shadow:0 1px 4px #000}
+#empty:has(#deckCover:not([hidden]))::before{content:"";position:absolute;inset:0;z-index:-1;background:linear-gradient(100deg,#101b17ef,#101b17be 60%,#101b1780)}
+#empty .record{width:clamp(48px,13cqw,124px)}
+.deckInfo{min-width:0;flex:1}
+#empty h2{max-width:none;font-size:clamp(16px,3.1cqw,24px);line-height:1.3;word-break:keep-all;overflow-wrap:anywhere}
+#deckCredit{margin:6px 0 0;color:#d2dfd4;overflow-wrap:anywhere}#deckCredit:empty{display:none}
+@container (max-width:460px){#empty .record{display:none}}
+.trackLabel{min-width:0;display:grid;gap:3px}
+.trackLabel>*{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

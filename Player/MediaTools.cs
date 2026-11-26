@@ -34,20 +34,97 @@ internal static class MediaTools
         await process.WaitForExitAsync();
         var error = await errors;
         token.ThrowIfCancellationRequested();
-        if (process.ExitCode != 0) throw new IOException(error.Split('\n',StringSplitOptions.RemoveEmptyEntries).LastOrDefault()?.Trim() ?? "미디어 요청 실패");
+        if(process.ExitCode!=0){
+            if(info.ArgumentList.Any(arg=>arg.StartsWith("https://music.youtube.com/watch?",StringComparison.Ordinal)) &&
+               error.Contains("Requested format is not available",StringComparison.OrdinalIgnoreCase)){
+                if(error.Contains("PO Token",StringComparison.OrdinalIgnoreCase))
+                    throw new IOException("Music 포맷 조회에서 YouTube 재생 인증 경고가 보고됐습니다.");
+                if(error.Contains("HTTP Error 403",StringComparison.OrdinalIgnoreCase))
+                    throw new IOException("Music 파일 요청 거부 (HTTP 403)");
+            }
+            throw new IOException(error.Split('\n',StringSplitOptions.RemoveEmptyEntries).LastOrDefault()?.Trim() ?? "미디어 요청 실패");
+        }
         return output.ToString().Trim();
+    }
+
+    internal record MusicTrack(string title,string artist,double duration=0);
+    internal sealed record MusicAvailability(MusicTrack? Track,string Status="unavailable");
+    static readonly Dictionary<string,(DateTime until,Task<MusicAvailability> probe)> musicChecks=new();
+    internal const string MusicAgent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
+    internal static string MusicUrl(string id)=>Video(id).Replace("www.youtube.com","music.youtube.com");
+    internal static async Task<string> MusicVersion(HttpClient client,string url,CancellationToken token){
+        using var page=new HttpRequestMessage(HttpMethod.Get,url);
+        page.Headers.UserAgent.ParseAdd(MusicAgent);
+        using var response=await client.SendAsync(page,token);
+        if(!response.IsSuccessStatusCode)return "";
+        var html=await response.Content.ReadAsStringAsync(token);
+        return Regex.Match(html,@"""INNERTUBE_CLIENT_VERSION""\s*:\s*""([0-9.]+)""").Groups[1].Value;
+    }
+    internal static MusicTrack? PlayableMusic(JsonElement player,string id){
+        if(!player.TryGetProperty("playabilityStatus",out var status) || !status.TryGetProperty("status",out var code) || code.GetString()!="OK" ||
+            !player.TryGetProperty("videoDetails",out var details) || !details.TryGetProperty("videoId",out var video) || video.GetString()!=id ||
+            !player.TryGetProperty("streamingData",out var streams) || !streams.TryGetProperty("adaptiveFormats",out var formats) ||
+            formats.ValueKind!=JsonValueKind.Array || !formats.EnumerateArray().Any(f=>f.TryGetProperty("mimeType",out var mime) && mime.GetString()?.StartsWith("audio/")==true))return null;
+        string Field(string key)=>details.TryGetProperty(key,out var value)?value.ToString():"";
+        double.TryParse(Field("lengthSeconds"),System.Globalization.CultureInfo.InvariantCulture,out var seconds);
+        return new(Field("title"),Field("author"),seconds);
+    }
+    internal static MusicAvailability MusicAvailabilityFor(JsonElement player,string id){
+        if(PlayableMusic(player,id) is {} track)return new(track,"available");
+        if(player.TryGetProperty("playabilityStatus",out var state)){
+            var reason=state.TryGetProperty("reason",out var message)?message.GetString()??"":"";
+            if(reason.Contains("premium",StringComparison.OrdinalIgnoreCase))return new(null,"premium");
+            if(state.TryGetProperty("status",out var status) && status.GetString()=="LOGIN_REQUIRED")return new(null,"login");
+        }
+        return new(null);
+    }
+    static async Task<MusicAvailability> ProbeMusic(string url,string id){
+        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try{
+            var version=await MusicVersion(Http,url,timeout.Token);
+            if(version.Length==0)return new(null,"error");
+            using var request=new HttpRequestMessage(HttpMethod.Post,"https://music.youtube.com/youtubei/v1/player?prettyPrint=false");
+            request.Headers.UserAgent.ParseAdd(MusicAgent);
+            request.Content=new StringContent(JsonSerializer.Serialize(new {videoId=id,context=new {client=new {clientName="WEB_REMIX",clientVersion=version}}}),Encoding.UTF8,"application/json");
+            using var result=await Http.SendAsync(request,timeout.Token);
+            if(!result.IsSuccessStatusCode)return new(null,"error");
+            using var player=JsonDocument.Parse(await result.Content.ReadAsStringAsync(timeout.Token));
+            return MusicAvailabilityFor(player.RootElement,id);
+        }catch(Exception e) when(e is HttpRequestException or OperationCanceledException or JsonException or InvalidOperationException){return new(null,"error");}
+    }
+    internal static Task<MusicAvailability> MusicAvailabilityFor(string id,CancellationToken token){
+        var url=MusicUrl(id);
+        lock(musicChecks){
+            var now=DateTime.UtcNow;
+            if(!musicChecks.TryGetValue(id,out var check) || check.until<=now ||
+               check.probe.IsCompletedSuccessfully && check.probe.Result.Status=="error"){
+                if(musicChecks.Count>=512)musicChecks.Remove(musicChecks.MinBy(pair=>pair.Value.until).Key);
+                check=(now.AddMinutes(10),ProbeMusic(url,id));musicChecks[id]=check;
+            }
+            return check.probe.WaitAsync(token);
+        }
+    }
+    static async Task<MusicTrack?> CheckMusic(string id,CancellationToken token)=>(await MusicAvailabilityFor(id,token)).Track;
+    internal static Task<string> RunMusicAudio(string id,string[] args,CancellationToken token,Action<string>? progress=null)=>
+        Run(["--extractor-args","youtube:player_client=web_music","-S","quality,abr",..args,"--",MusicUrl(id)],token,progress);
+    internal static async Task<string> RunAudio(string id,string[] args,CancellationToken token,Action<string>? progress=null,string[]? standardOptions=null){
+        if(await CheckMusic(id,token)!=null){
+            try{return await RunMusicAudio(id,args,token,progress);}
+            catch(IOException) when(!token.IsCancellationRequested){}
+        }
+        return await Run([..(standardOptions??[]),..args,"--",Video(id)],token,progress);
     }
 
     public static async Task<object> Stream(string id, string[] tried, CancellationToken token)
     {
         var excluded = string.Concat(tried.Take(5).Where(f => Regex.IsMatch(f, @"\A[\w.-]{1,40}\z")).Select(f => $"[format_id!={f}]"));
         var audio = "bestaudio[protocol=https]" + excluded;
-        string[] query=["--no-playlist","--check-formats","-f",audio+"[ext=webm]/"+audio+"[ext=m4a]/"+audio,
-            "--print","%(format_id)s","--print","%(url)s","--",Video(id)];
+        string[] query=["--no-playlist","--check-formats","-f",audio+"[ext~='^(webm|m4a)$']/"+audio,
+            "--print","%(format_id)s","--print","%(url)s"];
         string result;
-        try { result = await Run(["--extractor-args","youtube:skip=hls,dash",.. query],token); }
+        try { result = await RunAudio(id,query,token,standardOptions:["--extractor-args","youtube:skip=hls,dash"]); }
         catch(IOException ex) when(ex.Message.Contains("format",StringComparison.OrdinalIgnoreCase)){
-            result = await Run(query,token);
+            result = await Run([..query,"--",Video(id)],token);
         }
         var parts = result.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length != 2 || !Uri.TryCreate(parts[1],UriKind.Absolute,out var uri) || uri.Scheme != "https")
@@ -60,9 +137,9 @@ internal static class MediaTools
         var stage = Path.Combine(Path.GetDirectoryName(destination)!, ".linkwave-"+Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(stage);
         try {
-            await Run(["--no-playlist","--check-formats","--newline","--progress","--progress-template","download:받는 중 %(progress._percent_str)s",
+            await RunAudio(id,["--no-playlist","--no-continue","--check-formats","--newline","--progress","--progress-template","download:받는 중 %(progress._percent_str)s",
                 "--print","before_dl:오디오 받는 중","--print","post_process:MP3 변환 중","--no-simulate","-x","--audio-format","mp3",
-                "--audio-quality","0","-o",Path.Combine(stage,"track.%(ext)s"),"--",Video(id)],token,progress);
+                "--audio-quality","0","-o",Path.Combine(stage,"track.%(ext)s")],token,progress);
             token.ThrowIfCancellationRequested();
             var file = Path.Combine(stage,"track.mp3");
             if (!File.Exists(file) || new FileInfo(file).Length == 0) throw new IOException("완성된 MP3 파일을 찾지 못했습니다.");
@@ -86,9 +163,15 @@ internal static class MediaTools
     public static async Task<object> Info(string id,string key,CancellationToken token)
     {
         Video(id);
+        var music=CheckMusic(id,token);
         if (key.Length == 0) {
-            var credit=await VideoCredit(id,token);
-            return new {credit.title,credit.channel};
+            try{
+                var credit=await VideoCredit(id,token);
+                return new {credit.title,credit.channel,artist=(await music)?.artist};
+            }catch(Exception ex) when(!token.IsCancellationRequested && ex is HttpRequestException or IOException or TaskCanceledException){
+                if(await music is {} song)return new {song.title,song.artist};
+                throw;
+            }
         }
         var result = await Json("https://www.googleapis.com/youtube/v3/videos?part=status,snippet&id="+id+"&key="+Uri.EscapeDataString(key),token);
         var items = result.GetProperty("items");
@@ -96,7 +179,7 @@ internal static class MediaTools
         var item=items[0];
         var status=item.GetProperty("status");
         var snippet=item.GetProperty("snippet");
-        return new { title=snippet.GetProperty("title").GetString(),channel=snippet.TryGetProperty("channelTitle",out var channel)?channel.GetString():null,
+        return new { title=snippet.GetProperty("title").GetString(),channel=snippet.TryGetProperty("channelTitle",out var channel)?channel.GetString():null,artist=(await music)?.artist,
             embeddable=status.GetProperty("embeddable").GetBoolean(), kids=!status.TryGetProperty("madeForKids",out var kids)||kids.GetBoolean() };
     }
     public static async Task<object> Playlist(string id,string key,CancellationToken token)

@@ -58,6 +58,12 @@ class Program
             MediaTools.Listing=JsonSerializer.Serialize(new {subtitles=new {en=manual,ja=manual,ko=manual}});
             Expect((await Captions.Read("hint","",false,default,languageHint:"ja"))?.companion?.lang=="ja","title hint with ambiguous registered tracks");
             Expect((await Captions.Read("hint","en",false,default,languageHint:"ja"))?.companion?.lang=="en","explicit selection wins");
+            await Save("koreanSong","ko",false,false);await Save("koreanSong","ja",false,false);
+            MediaTools.Listing=JsonSerializer.Serialize(new {language="ko",subtitles=new {ja=manual,ko=manual}});
+            var original=await Captions.Read("koreanSong","",false,default,languageHint:"ja");
+            Expect(original is {lang:"ko",companion:null,audioLanguageCode:"ko"},"Korean audio wins over Japanese subtitle and title hint");
+            MediaTools.Listing=null;
+            Expect(await Captions.Read("koreanSong","",false,default)==original,"Korean original restored offline");
             if(args.Length==3 && args[0]=="--check-pppp"){
                 const string id="8Cm-7oCq9HA";
                 var cache=Directory.CreateDirectory(Path.Combine(Environment.Root.FullName,"Linkwave","Captions",Convert.ToHexString(Encoding.UTF8.GetBytes(id))));

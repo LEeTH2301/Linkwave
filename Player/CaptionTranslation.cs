@@ -43,7 +43,10 @@ internal sealed partial class CaptionTranslation(string folder,HttpClient http)
         var path=Path.Combine(folder,"Translations",Convert.ToHexString(Encoding.UTF8.GetBytes(id)),Convert.ToHexString(hash)+".json");
         if(!fresh && File.Exists(path))try{
             var cached=JsonSerializer.Deserialize<Result>(await File.ReadAllTextAsync(path,token));
-            if(cached?.lines?.Length==source.Length && cached.lines.All(s=>!string.IsNullOrWhiteSpace(s)))return cached;
+            if(cached?.lines?.Length==source.Length && cached.lines.All(s=>!string.IsNullOrWhiteSpace(s))){
+                if(IsNamuPage(cached.page))cached=cached with {lines=cached.lines.Select(WikiLine).ToArray()};
+                if(cached.lines.All(s=>!string.IsNullOrWhiteSpace(s)))return cached;
+            }
         }catch(JsonException){}
         if(plan && !fresh && !Account.CanUsePlan)return null;
         var key=new Access(plan?await Account.Token(token):Key(),plan);
@@ -69,7 +72,10 @@ internal sealed partial class CaptionTranslation(string folder,HttpClient http)
             var wiki=ReadOutput<Wiki>(response,"기존 번역 가사 검색");
             string? url=null;
             if(wiki is {page:not null,pairs:not null} && SourceUri(wiki.page) is {} uri){
-                if(uri.Host=="namu.wiki")url=LyricSource(response,wiki.page,Namu,candidates,wiki.pairs.Where(p=>!string.IsNullOrWhiteSpace(p?.original)).Select(p=>p.original).ToArray());
+                if(uri.Host=="namu.wiki"){
+                    wiki=wiki with {pairs=wiki.pairs.Where(p=>p!=null).Select(p=>new Pair(WikiLine(p.original),WikiLine(p.korean))).ToArray()};
+                    url=LyricSource(response,wiki.page,Namu,candidates,wiki.pairs.Where(p=>!string.IsNullOrWhiteSpace(p.original)).Select(p=>p.original).ToArray());
+                }
                 else if(CommunityName(uri)==null || IsCommunityPost(uri))url=CitedSource(response,wiki.page,[],true);
             }
             if(url!=null && wiki.pairs is {} pairs){

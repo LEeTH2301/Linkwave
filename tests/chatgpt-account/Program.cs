@@ -22,8 +22,43 @@ try{
         return;
     }
     if(args.Length==0 || args is ["--public-search"]){
+        foreach(bool timed in new[]{false,true}){
+            var id=timed?"musicTime01":"musicText01";
+            var musicServer=new PublicSearchServer(music:true,timed:timed);
+            using var musicClient=new HttpClient(musicServer);
+            var musicService=new CaptionTranslation(folder.FullName,musicClient);
+            var savedDir=Directory.CreateDirectory(Path.Combine(folder.FullName,"GeneratedLyrics",Convert.ToHexString(Encoding.ASCII.GetBytes(id))));
+            CaptionTranslation.Cue[] words=[new(1,3,"First sample line"),new(4,6,"Second sample line"),new(7,10,"Final sample line")];
+            await File.WriteAllTextAsync(Path.Combine(savedDir.FullName,"local-words.json"),JsonSerializer.Serialize(words));
+            var musicStages=new List<string>();
+            var hit=await musicService.GenerateLyrics(id,"Sample Song","test-model","low",_=>throw new Exception("unexpected audio fetch"),
+                default,true,180,musicStages.Add,autoTiming:true,allowAi:false);
+            var winner=hit?.choices.FirstOrDefault();
+            if(winner?.publisher!="YouTube Music" || winner.AutoTimingAttempted==timed || winner.cues.Length!=3 ||
+                !winner.cues.Select(c=>c.start).SequenceEqual(words.Select(c=>c.start)) ||
+                musicStages.Contains("일반 가사 확인 · 줄별 시각 자동 분석 중")==timed)
+                throw new Exception("YouTube Music priority or automatic timing");
+            int calls=musicServer.MusicRequests;
+            var musicReplay=await musicService.GenerateLyrics(id,"Sample Song","test-model","low",_=>throw new Exception("repeated analysis"),
+                default,true,180,autoTiming:true,allowAi:false);
+            if(musicReplay?.choices[0].cues.Length!=3 || musicServer.MusicRequests!=calls)throw new Exception("Music cache was not reused");
+        }
         using var publicHttp=new HttpClient(new PublicSearchServer());
         var service=new CaptionTranslation(folder.FullName,publicHttp);
+        const string savedId="plainCache1";
+        var plainDir=Directory.CreateDirectory(Path.Combine(folder.FullName,"GeneratedLyrics",Convert.ToHexString(Encoding.ASCII.GetBytes(savedId))));
+        var savedRows=new[]{new CaptionTranslation.Cue(2,4,"첫 번째 구절"),new CaptionTranslation.Cue(6,8,"두 번째 구절"),new CaptionTranslation.Cue(9,12,"마지막 구절")};
+        var savedText=new CaptionTranslation.Generated([],"https://namu.wiki/w/Sample",["첫 번째 구절[3]","[4]","두 번째 구절［５］","마지막 구절"]);
+        var html="""<h1>Sample</h1><iframe src="/embed/plainCache1"></iframe><h2>가사</h2><table><tr><td>[후렴] 시작<a href='#fn-3'><span></span>&#91;3&#93;</a><br>다음&#91;4&#93;<br>[5]<br>마지막 줄<span class='footnote-list'><span id='fn-3'></span><a href='#rfn-3'>[3]</a> 각주 설명</span></td></tr></table>""";
+        if(CaptionTranslation.KoreanWikiLines(html,savedId,"Sample")?.SequenceEqual(["[후렴] 시작","다음","마지막 줄"])!=true)
+            throw new Exception("Wiki footnote markers or definition leaked into lyrics");
+        if(CaptionTranslation.CleanWikiCandidate(savedText with {page="https://example.org/song"}).plain![0]!="첫 번째 구절[3]")
+            throw new Exception("Unrelated source text was changed");
+        await File.WriteAllTextAsync(Path.Combine(plainDir.FullName,"test-model-low.json"),JsonSerializer.Serialize(new CaptionTranslation.RankedLyrics([savedText])));
+        await File.WriteAllTextAsync(Path.Combine(plainDir.FullName,"local-words.json"),JsonSerializer.Serialize(savedRows));
+        var cachedPlain=await service.GenerateLyrics(savedId,"Sample","test-model","low",_=>throw new Exception("unexpected audio request"),default,autoTiming:true,allowAi:false);
+        if(cachedPlain?.choices[0].AutoTimingAttempted!=true || !savedRows.Select(c=>c.start).SequenceEqual(cachedPlain.choices[0].cues.Select(c=>c.start)))
+            throw new Exception("Cached plain lyrics must be timed locally without a search");
         foreach(bool allowAi in new[]{true,false}){
             var publicSongId=allowAi?"public00001":"public00002";
             var messages=new List<string>();
@@ -35,6 +70,11 @@ try{
         if(args.Length>0){Console.WriteLine("Public-only search passed with disconnected account and AI disabled.");return;}
     }
     if(args.Length==0 || args is ["--original-and-playlist"]){
+        var musicPlayer=JsonDocument.Parse("""{"playabilityStatus":{"status":"OK"},"videoDetails":{"videoId":"abcdefghijk","title":"Cover","author":"Singer"},"streamingData":{"adaptiveFormats":[{"mimeType":"audio/webm"}]}}""").RootElement;
+        if(MediaTools.PlayableMusic(musicPlayer,"abcdefghijk")?.artist!="Singer" || MediaTools.PlayableMusic(musicPlayer,"differentID")!=null)
+            throw new Exception("Music playback must match the requested recording");
+        foreach(var invalid in new[]{musicPlayer.GetRawText().Replace("\"OK\"","\"UNPLAYABLE\""),musicPlayer.GetRawText().Replace("audio/webm","video/webm")})
+            if(MediaTools.PlayableMusic(JsonDocument.Parse(invalid).RootElement,"abcdefghijk")!=null)throw new Exception("Music source without playable audio");
         const string song="koreanlyr01";
         using var http=new HttpClient();
         var service=new CaptionTranslation(folder.FullName,http);
@@ -558,14 +598,26 @@ static async Task CheckKoreanWiki(string[] args){
     if(cues.Length!=lines.Length)throw new Exception($"Reading mismatch: {cues.Length}/{lines.Length}");
     if(CaptionTranslation.MatchKoreanReading(lines.Reverse().ToArray(),track).Length!=0)throw new Exception("Accepted unrelated order");
     var page="https://namu.wiki/w/"+Uri.EscapeDataString(args[2]);
-    var candidate=new CaptionTranslation.Generated(cues,page){Original=lines,OriginalSource=page,OriginalLanguage="ko",TimingNote="한국어 원문 · 등록 자막 발음과 시각 일치"};
+    var candidate=new CaptionTranslation.Generated(cues,page){Original=lines,OriginalSource=page,OriginalLanguage="ko",TimingNote="한국어 원문 · 등록 자막 대조로 시각 확인"};
     await File.WriteAllTextAsync(args[5],JsonSerializer.Serialize(candidate));
     Console.WriteLine($"Verified {cues.Length} Korean lyric lines, {cues[0].start} to {cues[^1].end} seconds.");
 }
 
-sealed class PublicSearchServer:HttpMessageHandler{
+sealed class PublicSearchServer(bool music=false,bool timed=false):HttpMessageHandler{
+    public int MusicRequests;
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage req,CancellationToken token){
         if(req.RequestUri!.Host.EndsWith("openai.com"))throw new Exception("Public search tried to contact OpenAI");
+        if(music && req.RequestUri.Host=="music.youtube.com"){
+            MusicRequests++;
+            var lines=new[]{"First sample line","Second sample line","Final sample line"};
+            var content=req.RequestUri.AbsolutePath switch{
+                "/watch"=>"""{"INNERTUBE_CLIENT_VERSION":"1.2.3"}""",
+                "/youtubei/v1/next"=>"""{"contents":{"singleColumnMusicWatchNextResultsRenderer":{"tabbedRenderer":{"watchNextTabbedResultsRenderer":{"tabs":[{"tabRenderer":{"endpoint":{"browseEndpoint":{"browseId":"MPLYtest"}}}}]}}}}}""",
+                _ when timed=>JsonSerializer.Serialize(new {contents=new {elementRenderer=new {newElement=new {type=new {componentType=new {model=new {timedLyricsModel=new {lyricsData=new {timedLyricsData=lines.Select((s,i)=>new {lyricLine=s,cueRange=new {startTimeMilliseconds=(1+3*i)*1000,endTimeMilliseconds=(3+3*i)*1000}})}}}}}}}}}),
+                _=>JsonSerializer.Serialize(new {contents=new {sectionListRenderer=new {contents=new[]{new {musicDescriptionShelfRenderer=new {description=new {runs=new[]{new {text=string.Join('\n',lines)}}}}}}}}})
+            };
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK){Content=new StringContent(content,Encoding.UTF8,"application/json")});
+        }
         var res=req.RequestUri.Host=="lrclib.net"?new HttpResponseMessage(HttpStatusCode.OK){Content=new StringContent(
             """[{"id":123,"trackName":"Sample Song","artistName":"Singer","duration":180,"syncedLyrics":"[00:01.00]First line\n[00:10.00]Second line\n[00:20.00]Last line","plainLyrics":"First line\nSecond line\nLast line"}]""")}:new HttpResponseMessage(HttpStatusCode.NotFound);
         return Task.FromResult(res);

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 
@@ -19,6 +20,7 @@ internal sealed partial class CaptionTranslation
         public string? TimingNote {get;init;}
         public int[]? MachineRows {get;init;}
         public bool Retranslated {get;init;}
+        public bool AutoTimingAttempted {get;init;}
         public bool CanRetranslate=>TranslationRows(this).Length>0;
     }
     internal record RankedLyrics(Generated[] choices,bool legacy=false,string? warning=null,bool searching=false,string? savedModel=null,string? savedEffort=null);
@@ -61,6 +63,7 @@ internal sealed partial class CaptionTranslation
         return result;
     }
     static int SourcePriority(Generated g){
+        if(g.publisher=="YouTube Music" && new Uri(g.page).Host=="music.youtube.com")return -1;
         if(new Uri(g.page).Host=="namu.wiki")return 2;
         if(g.page.StartsWith(AlsongProduct,StringComparison.Ordinal))return 3;
         return g.publisher!=null?0:1;
@@ -101,6 +104,7 @@ internal sealed partial class CaptionTranslation
             return ranked with {choices=valid,legacy=ranked.legacy || valid.Length<choices.Length};
         }
         var old=await ReadJson<Generated>(path,token);
+        if(old!=null)old=CleanWikiCandidate(old);
         return ValidLyrics(old)?new([old!],true):null;
     }
     public async Task<RankedLyrics?> PlaybackCache(string id,string model,string effort,CancellationToken token,string? page=null){
@@ -122,9 +126,25 @@ internal sealed partial class CaptionTranslation
 
     public async Task<RankedLyrics?> GenerateLyrics(string id,string title,string model,string effort,
         Func<CancellationToken,Task<string>> getAudio,CancellationToken token,bool plan=false,double duration=0,Action<string>? status=null,Action<RankedLyrics>? preview=null,
-        bool refresh=false,string? keepPage=null,bool allowAi=true){
+        bool refresh=false,string? keepPage=null,bool allowAi=true,bool autoTiming=false){
         var cached=await CachedLyrics(id,model,effort,token);
-        if(!refresh && cached!=null)return cached with {searching=false};
+        async Task<Generated> AutoTime(Generated selected,Generated[] references,CancellationToken cancel){
+            status?.Invoke("일반 가사 확인 · 줄별 시각 자동 분석 중");
+            try{
+                var timed=await TimeSelected(id,model,effort,selected,references,plan,getAudio,m=>status?.Invoke(m),cancel,allowAi,true);
+                return timed with {AutoTimingAttempted=true};
+            }catch(Exception ex) when(!cancel.IsCancellationRequested && ex is IOException or HttpRequestException or OperationCanceledException or JsonException or InvalidOperationException or System.ComponentModel.Win32Exception){
+                return selected with {AutoTimingAttempted=true,TimingNote="자동 시각 분석 보류 · "+ex.Message};
+            }
+        }
+        if(!refresh && cached!=null){
+            if(autoTiming && cached.choices.FirstOrDefault() is {cues.Length:0,plain.Length:>0,AutoTimingAttempted:false} plain){
+                var updated=await AutoTime(plain,cached.choices,token);
+                cached=cached with {choices=Rank(cached.choices.Select(c=>c.page==plain.page?updated:c).ToList()),searching=false};
+                await Captions.WriteJson(Path.Combine(GeneratedDirectory(id),model+"-"+effort+".json"),cached,token);
+            }
+            return cached with {searching=false};
+        }
         if(refresh && (cached?.choices.Length is null or 0 || !string.IsNullOrEmpty(keepPage) && cached.choices.All(g=>g.page!=keepPage))){
             var previous=await PlaybackCache(id,model,effort,token,keepPage);
             if(previous?.choices is {Length:>0})
@@ -163,7 +183,8 @@ internal sealed partial class CaptionTranslation
             token.ThrowIfCancellationRequested();
             preview?.Invoke(partial);
         }
-        await CollectLyrics(id,title,duration,model,effort,plan,ValidCues(heard)?heard!:[],results,failures,status,Publish,token,keepPage,cached?.choices??[],allowAi:allowAi);
+        await CollectLyrics(id,title,duration,model,effort,plan,ValidCues(heard)?heard!:[],results,failures,status,Publish,token,keepPage,cached?.choices??[],allowAi:allowAi,
+            autoTime:autoTiming?AutoTime:null,currentChoices:CurrentChoices);
         token.ThrowIfCancellationRequested();
         if(results.Count==0){
             var saved=new RankedLyrics(cached?.choices??[],warning:failures.Count>0?string.Join(" · ",failures.Distinct()):cached?.choices.Length>0?"새 결과 없음 · 저장된 가사 유지":null);
@@ -172,25 +193,13 @@ internal sealed partial class CaptionTranslation
         }
         status?.Invoke("자막 후보 정확도 비교 중");
         var choices=CurrentChoices();
-        if(allowAi && !plan && !ValidCues(heard) && choices[0].cues.Length==0 && Key() is {Length:>0} key){
-            try{
-                status?.Invoke("보컬 시각 분석 중");
-                heard=await Transcribe(key,await getAudio(token),token);
-                if(ValidCues(heard)){
-                    await Captions.WriteJson(timingPath,heard,token);
-                    await Publish();
-                    var aligned=await AnalyzeCandidate(id,model,effort,choices[0].page,plan,getAudio,m=>status?.Invoke(m),token);
-                    choices=aligned.choices;
-                }
-            }catch(Exception e) when(!token.IsCancellationRequested && e is IOException or System.Net.Http.HttpRequestException){failures.Add(e.Message);}
-        }
         var ranked=new RankedLyrics(choices,warning:failures.Count>0?string.Join(" · ",failures.Distinct()):null);
         await Captions.WriteJson(path,ranked,token);
         return ranked;
     }
 
     internal static Generated[] Rank(List<Generated> results,string? keepPage=null){
-        var texts=results.Where(ValidLyrics).Select(g=>(g,lines:(g.Original??g.plain??g.cues.Select(c=>c.text).ToArray()).Select(Normalize).ToArray())).ToArray();
+        var texts=results.OfType<Generated>().Select(CleanWikiCandidate).Where(ValidLyrics).Select(g=>(g,lines:(g.Original??g.plain??g.cues.Select(c=>c.text).ToArray()).Select(Normalize).ToArray())).ToArray();
         static bool Excerpt(string[] shortText,string[] longText){
             if(shortText.Length*2>longText.Length)return false;
             int i=0;

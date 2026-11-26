@@ -19,31 +19,39 @@ internal sealed partial class CaptionTranslation
         var selected=set?.choices.FirstOrDefault(c=>c.page==page);
         if(selected==null || set==null)throw new IOException("선택한 가사 후보를 다시 확인하세요.");
         if(ValidCues(selected.cues))return set;
+        var updated=await TimeSelected(id,model,effort,selected,set.choices,plan,getAudio,status,token);
+        var ranked=new RankedLyrics(Rank(set.choices.Select(c=>c.page==page?updated:c).ToList(),page),set.legacy,set.warning);
+        await Captions.WriteJson(Path.Combine(GeneratedDirectory(id),model+"-"+effort+".json"),ranked,token);
+        return ranked;
+    }
+
+    async Task<Generated> TimeSelected(string id,string model,string effort,Generated selected,Generated[] choices,bool plan,
+        Func<CancellationToken,Task<string>> getAudio,Action<string> status,CancellationToken token,bool allowAi=true,bool automatic=false){
         var lines=selected.plain!;
         var original=selected.Original?.Length==lines.Length?selected.Original:lines;
         var dir=GeneratedDirectory(id);
-        async Task<RankedLyrics> Save(Cue[] timed,string? note){
-            var updated=selected with {cues=timed,plain=timed.Length==lines.Length?null:lines,TimingNote=note};
-            var ranked=new RankedLyrics(Rank(set.choices.Select(c=>c.page==page?updated:c).ToList(),page),set.legacy,set.warning);
-            await Captions.WriteJson(Path.Combine(dir,model+"-"+effort+".json"),ranked,token);
-            return ranked;
-        }
-        var references=set.choices.Where(g=>ValidCues(g.cues)).Select(g=>g.cues.Select((c,i)=>c with {
+        Generated Timed(Cue[] timed,string note)=>selected with {cues=timed,plain=timed.Length==lines.Length?null:lines,TimingNote=note};
+        var references=choices.Where(g=>ValidCues(g.cues)).Select(g=>g.cues.Select((c,i)=>c with {
             text=c.originalText??(g.Original?.Length==g.cues.Length?g.Original[i]:c.text)}).ToArray()).ToList();
         foreach(var track in await Captions.RegisteredSaved(id,token))references.Add(CaptionTimes(track.text));
         var best=references.Select(r=>ProjectTiming(original,lines,r,token)).OrderByDescending(c=>c.Length).FirstOrDefault();
-        if(best?.Length==lines.Length)return await Save(best,"등록 시각 대조 · 분할 줄 시각 추정");
+        if(best?.Length==lines.Length)return Timed(best,"등록 시각 대조 · 분할 줄 시각 추정");
         try{
-            var matched=await RecordingTiming(id,set.choices,original,lines,getAudio,status,token);
+            var matched=await RecordingTiming(id,choices,original,lines,getAudio,status,token);
             if(matched.Length>0 && matched.Length>=(best?.Length??0) && matched.Length*2>=lines.Length)
-                return await Save(matched,"음원 파형 일치 · 분할 줄 시각 추정");
+                return Timed(matched,"음원 파형 일치 · 분할 줄 시각 추정");
         }catch(Exception e) when(!token.IsCancellationRequested && e is IOException or JsonException or HttpRequestException or OperationCanceledException){
             status("기준 음원을 대조할 수 없어 보컬 구간 확인 중");
         }
-        if(best is {Length:>0} && best.Length*2>=lines.Length)return await Save(best,"등록 시각 대조 · 분할 줄 시각 추정");
+        if(best is {Length:>0} && best.Length*2>=lines.Length)return Timed(best,"등록 시각 대조 · 분할 줄 시각 추정");
         var wordsPath=Path.Combine(dir,"local-words.json");
         var heard=await ReadJson<Cue[]>(wordsPath,token);
         if(!ValidCues(heard))heard=await ReadJson<Cue[]>(Path.Combine(dir,"vocal-segments.json"),token);
+        if(!ValidCues(heard) && automatic && allowAi && !plan && Key() is {Length:>0} transcriptionKey){
+            status("보컬 시각 분석 중");
+            heard=await Transcribe(transcriptionKey,await getAudio(token),token);
+            if(ValidCues(heard))await Captions.WriteJson(Path.Combine(dir,"vocal-segments.json"),heard,token);
+        }
         if(!ValidCues(heard)){
             var modelPath=await SpeechModel(status,token);
             status("분석할 오디오 준비 중");
@@ -73,15 +81,15 @@ internal sealed partial class CaptionTranslation
                 if(matches.Length>aligned.Length){aligned=matches;heard=phrases;}
             }
         }
-        if(aligned.Length>=6 && aligned.Length<lines.Length && set.choices.Any(c=>SourceUri(c.page)?.Host=="vocadb.net" || c.page.StartsWith(AlsongProduct))){
+        if(aligned.Length>=6 && aligned.Length<lines.Length && choices.Any(c=>SourceUri(c.page)?.Host=="vocadb.net" || c.page.StartsWith(AlsongProduct))){
             Cue[] cover=[];
             try{cover=await CoverTiming(id,original,lines,heard!,aligned,status,token);}
             catch(Exception e) when(!token.IsCancellationRequested && e is HttpRequestException or IOException or OperationCanceledException){
                 status("원곡 시각을 확인할 수 없어 이 영상의 보컬로 대조 중");
             }
-            if(cover.Length>aligned.Length && cover.Length*2>=lines.Length)return await Save(cover,"커버 보컬과 알송 원곡의 줄별 시각 대조 · 추정 싱크");
+            if(cover.Length>aligned.Length && cover.Length*2>=lines.Length)return Timed(cover,"커버 보컬과 알송 원곡의 줄별 시각 대조 · 추정 싱크");
         }
-        if(aligned.Length<lines.Length)try{
+        if(allowAi && aligned.Length<lines.Length)try{
             var key=new Access(plan?await Account.Token(token):Key(),plan);
             if(key.Token.Length>0){
                 var number=new {type="integer"};
@@ -98,7 +106,7 @@ internal sealed partial class CaptionTranslation
         }catch(Exception e) when(!token.IsCancellationRequested && aligned.Length>0 && e is IOException or HttpRequestException or OperationCanceledException){}
         if(aligned.Length==0)throw new IOException("보컬에서 일치하는 줄을 찾지 못했습니다. 영상·음성 보강 분석을 사용할 수 있습니다.");
         var cues=aligned.Select(m=>new Cue(heard![m.first].start,heard[m.last].end,lines[m.line],original==lines?null:original[m.line])).ToArray();
-        return await Save(cues,"이 영상의 보컬 인식 구간 대조");
+        return Timed(cues,"이 영상의 보컬 인식 구간 대조");
     }
     internal record TimingGap(double Start,double? End){
         public string CacheKey=>Start.ToString("R",CultureInfo.InvariantCulture)+"_"+(End?.ToString("R",CultureInfo.InvariantCulture)??"end");

@@ -22,7 +22,12 @@ internal sealed partial class CaptionTranslation
         return Path.Combine(GeneratedDirectory(id),"original-pairs",lang+"-"+hash+".json");
     }
     internal async Task<OriginalMatches?> CachedOriginal(string id,string lang,Cue[] korean,CancellationToken token){
-        if(lang is "ja" or "en" or "ko")return await ReadJson<OriginalMatches>(OriginalCache(id,lang,korean),token);
+        if(lang is "ja" or "en" or "ko"){
+            var saved=await ReadJson<OriginalMatches>(OriginalCache(id,lang,korean),token);
+            if(saved!=null && IsNamuPage(saved.page))
+                return saved with {cues=saved.cues.Select(c=>c with {text=WikiLine(c.text)}).Where(c=>c.text.Length>0).ToArray()};
+            return saved;
+        }
         return await CachedOriginal(id,"en",korean,token)??await CachedOriginal(id,"ja",korean,token)??await CachedOriginal(id,"ko",korean,token);
     }
     internal Task SaveOriginalPair(string id,string language,Cue[] korean,OriginalMatches result,CancellationToken token)=>
@@ -94,7 +99,8 @@ internal sealed partial class CaptionTranslation
     }
 
     async Task CollectLyrics(string id,string videoTitle,double duration,string model,string effort,bool plan,Cue[] heard,
-        List<Generated> results,List<string> failures,Action<string>? status,Func<Task> publish,CancellationToken cancellation,string? keepPage,Generated[] savedChoices,bool timedSourcesOnly=false,Func<bool>? originalMatchFound=null,string? originalLanguage=null,bool allowAi=true){
+        List<Generated> results,List<string> failures,Action<string>? status,Func<Task> publish,CancellationToken cancellation,string? keepPage,Generated[] savedChoices,bool timedSourcesOnly=false,Func<bool>? originalMatchFound=null,string? originalLanguage=null,bool allowAi=true,
+        Func<Generated,Generated[],CancellationToken,Task<Generated>>? autoTime=null,Func<Generated[]>? currentChoices=null){
         bool catalogOriginals=originalMatchFound!=null;
         using var lifetime=CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         var token=lifetime.Token;
@@ -166,7 +172,7 @@ internal sealed partial class CaptionTranslation
                 if(pages.results==null)throw new CaptionResultException("후보 목록 누락");
                 foreach(var r in pages.results){
                     if(r==null || !HasLyricBody(r.lines) || r.original==null ||
-                        LyricSource(response,r.page,site,candidates,r.original) is not {} page)continue;
+                        LyricSource(response,r.page,site,candidates,IsNamuPage(r.page)?r.original.Select(WikiLine).Where(s=>!string.IsNullOrWhiteSpace(s)).ToArray():r.original) is not {} page)continue;
                     if(r.fanTranslation && (!r.lines.Any(s=>Regex.IsMatch(s,"[가-힣]")) || CitedSource(response,page,site.Domains,true)==null))continue;
                     bool onlyTranslation=r.fanTranslation && r.original.Length==0;
                     if(!onlyTranslation && (!HasLyricBody(r.original) || r.original.Length!=r.lines.Length))continue;
@@ -181,7 +187,7 @@ internal sealed partial class CaptionTranslation
                         }
                     }
                     var timed=cues.Count==r.lines.Length;
-                    found.Add(new Generated(timed?cues.ToArray():[],page,timed?null:r.lines,official?r.publisher.Trim():null,official?r.proof:null){Original=onlyTranslation?null:r.original,FanTranslation=r.fanTranslation});
+                    found.Add(CleanWikiCandidate(new Generated(timed?cues.ToArray():[],page,timed?null:r.lines,official?r.publisher.Trim():null,official?r.proof:null){Original=onlyTranslation?null:r.original,FanTranslation=r.fanTranslation}));
                 }
                 return new(found,discovered);
             }catch(IOException e){return new(found,discovered,site.Label+" · "+e.Message);}
@@ -206,6 +212,9 @@ internal sealed partial class CaptionTranslation
         if(!useAi)status?.Invoke("공개 출처에서 가사 검색 중");
         var queue=new Queue<LyricSite>(!useAi?Enumerable.Empty<LyricSite>():catalogOriginals?LyricSites.Where(site=>site.Domains.Length>0 && !site.Domains.Contains("www.youtube.com")):LyricSites);
         var tasks=new List<Task<BatchResult>>();
+        var music=MusicLyrics(id,token);
+        tasks.Add(music);
+        status?.Invoke("YouTube Music 가사 확인 중");
         void StartSite(){if(queue.TryDequeue(out var site))tasks.Add(SearchSite(site,leads.ToArray()));}
         StartSite();StartSite();
         var vocalSong=vocalLookup.Value;
@@ -255,11 +264,15 @@ internal sealed partial class CaptionTranslation
             return new(items.DistinctBy(item=>string.Join("\n",item.plain!)).ToList(),[],alternative.Error??direct.Error);
         }
         var translations=new HashSet<Task<BatchResult>>();
+        Task<BatchResult>? timing=null;
+        string? timingPage=null;
+        bool firstSelection=true;
+        async Task<BatchResult> TimeFirst(Generated first,Generated[] references)=>new([await autoTime!(first,references,token)],[]);
         tasks.AddRange([google,recordings,vocalLyrics,labelLyrics,wikiTable]);
         if(alsong!=null)tasks.Add(alsong);
         try{
             while(tasks.Count>0){
-                var done=await Task.WhenAny(tasks);
+                var done=tasks.Contains(music)?music:await Task.WhenAny(tasks);
                 tasks.Remove(done);
                 var batch=await done;
                 token.ThrowIfCancellationRequested();
@@ -268,13 +281,21 @@ internal sealed partial class CaptionTranslation
                 bool translated=translations.Remove(done);
                 var usable=batch.Items.Where(ValidLyrics).ToArray();
                 if(usable.Length>0){
-                    if(translated)results.RemoveAll(g=>usable.Any(c=>c.page==g.page));
+                    if(translated || done==timing)results.RemoveAll(g=>usable.Any(c=>c.page==g.page));
                     results.AddRange(usable);
                     await publish();
+                    if(firstSelection && autoTime!=null && currentChoices!=null){
+                        firstSelection=false;
+                        var available=currentChoices();
+                        if(available.FirstOrDefault() is {cues.Length:0,plain.Length:>0} first){
+                            timingPage=first.page;timing=TimeFirst(first,available);tasks.Add(timing);
+                        }
+                    }
                 }
-                var catalog=done==google || done==recordings || done==alsong || done==vocalLyrics || done==labelLyrics || done==wikiTable;
+                var catalog=done==music || done==timing || done==google || done==recordings || done==alsong || done==vocalLyrics || done==labelLyrics || done==wikiTable;
                 if(catalog && !catalogOriginals && useAi){
                     foreach(var item in usable){
+                        if(item.page==timingPage && done!=timing)continue;
                         if(savedChoices.Any(old=>old.page==item.page && HasTimedTranslation(old) && SameCueStarts(old,item)))continue;
                         var lines=item.plain??item.cues.Select(c=>c.text).ToArray();
                         var missing=Enumerable.Range(0,lines.Length).Where(i=>!Regex.IsMatch(lines[i],"[가-힣]")).ToArray();
@@ -303,8 +324,14 @@ internal sealed partial class CaptionTranslation
                 if(result==null)return new([],[],"원문 가사 표시 · 번역 보류");
                 var merged=display.ToArray();
                 for(int i=0;i<missing.Length;i++)merged[missing[i]]=result.lines[i];
-                var cues=item.cues.Select((c,i)=>c with {text=merged[i]}).ToArray();
-                return new([item with {cues=cues,plain=cues.Length==0?merged:null,MachineRows=missing}],[]);
+                var cues=new List<Cue>();
+                int next=0;
+                foreach(var cue in item.cues){
+                    int i=item.cues.Length==merged.Length?next:Array.FindIndex(display,next,t=>t==cue.text);
+                    if(i<0)return new([],[],"일부 시각과 번역 줄을 대조할 수 없어 원문 유지");
+                    cues.Add(cue with {text=merged[i],originalText=item.Original![i]});next=i+1;
+                }
+                return new([item with {cues=cues.ToArray(),plain=cues.Count==merged.Length?null:merged,MachineRows=missing}],[]);
             }catch(Exception e) when(!token.IsCancellationRequested && e is IOException or HttpRequestException or OperationCanceledException){
                 return new([],[],"원문 가사 표시 · 번역 보류");
             }

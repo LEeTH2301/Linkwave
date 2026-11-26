@@ -94,6 +94,11 @@ chrome.webview.addEventListener('message',({data})=>{
  if(data.events){clearScene();sheet=indexSheet(data);return;}
  if(data.stop){clearScene();return;}
  if(!Number.isFinite(data.position))return;
+ const fixedSize=data.resizeText===false?'21.91px':'';
+ if(area.parentElement.style.fontSize!==fixedSize){
+  area.parentElement.style.fontSize=fixedSize;
+  if(sheet)for(const [i,n] of nodes)position(n,sheet.positions[sheet.events[i].wpWinPosId]||{});
+ }
  introText=data.intro||'';introUntil=(data.introUntil||0)*1000;
  if(ticket)cancelAnimationFrame(ticket);
  origin=data.position*1000;received=performance.now();rate=data.rate||0;tick();

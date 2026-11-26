@@ -166,7 +166,7 @@ internal static class Captions
         }catch(Exception) when(saved.Count>0&&!token.IsCancellationRequested){ }
         return entries;
     }
-    internal record Preference(string lang,bool auto,string? originalLanguage=null);
+    internal record Preference(string lang,bool auto,string? originalLanguage=null,string? audioLanguageCode=null);
 
     static bool Registered(bool automatic,bool? translated)=>!automatic && translated==false;
 
@@ -207,25 +207,31 @@ internal static class Captions
         if(File.Exists(preferencePath))try{
             pref=JsonSerializer.Deserialize<Preference>(await File.ReadAllTextAsync(preferencePath,token));
         }catch(JsonException){}
+        var knownAudio=SongFor(id,"",0).language??pref?.audioLanguageCode;
+        if(knownAudio=="und")knownAudio=null;
+        SavedTrack? WithAudio(SavedTrack? track)=>track==null?null:track with {audioLanguageCode=knownAudio??track.audioLanguageCode};
         var cachedKo=registered.FirstOrDefault(t=>Korean(t.lang) && (language.Length==0 || !Korean(language) || t.lang==language));
-        var cachedSource=registered.FirstOrDefault(t=>!Korean(t.lang) && t.lang==(language.Length>0 && !Korean(language)?language:pref?.originalLanguage));
+        var explicitForeign=language.Length>0 && !Korean(language);
+        var cachedSource=registered.FirstOrDefault(t=>!Korean(t.lang) && (explicitForeign?t.lang==language:
+            knownAudio!=null?Family(t.lang)==Family(knownAudio):t.lang==pref?.originalLanguage));
         if(savedPairOnly){
-            if(cachedSource==null && (language.Length==0 || Korean(language)) && pref?.originalLanguage==null){
+            if(cachedSource==null && !explicitForeign && pref?.originalLanguage==null && knownAudio==null){
                 var savedSources=registered.Where(t=>!Korean(t.lang)).ToArray();
                 if(savedSources.Length==1)cachedSource=savedSources[0];
             }
-            return !automatic && cachedKo!=null && cachedSource!=null?cachedKo with {companion=cachedSource}:null;
+            return !automatic && cachedKo!=null && cachedSource!=null?WithAudio(cachedKo with {companion=cachedSource}):null;
         }
-        if(!refresh && !automatic && cachedKo!=null && cachedSource!=null)return cachedKo with {companion=cachedSource};
+        if(!refresh && !automatic && cachedKo!=null && cachedSource!=null)return WithAudio(cachedKo with {companion=cachedSource});
+        if(!refresh && !automatic && !explicitForeign && cachedKo!=null && knownAudio!=null && Korean(knownAudio))return WithAudio(cachedKo);
         List<Track> tracks;
         if(refresh)cache.TryRemove(id,out _);
         try{tracks=await Fetch(id,token);}
         catch(Exception) when(!token.IsCancellationRequested && stored.Count>0){
             if(language.Length>0 && selected==null)throw;
             var foreign=registered.Where(t=>!Korean(t.lang)).ToList();
-            if(cachedSource==null && pref?.originalLanguage==null && foreign.Count==1)cachedSource=foreign[0];
-            if(cachedKo!=null && cachedSource!=null)return cachedKo with {companion=cachedSource};
-            return selected??cachedKo??registered.FirstOrDefault(t=>t.lang==pref?.lang)??registered.FirstOrDefault();
+            if(cachedSource==null && knownAudio==null && pref?.originalLanguage==null && foreign.Count==1)cachedSource=foreign[0];
+            if(cachedKo!=null && cachedSource!=null)return WithAudio(cachedKo with {companion=cachedSource});
+            return WithAudio(selected??cachedKo??registered.FirstOrDefault(t=>t.lang==pref?.lang)??registered.FirstOrDefault());
         }
         var available=tracks.Where(t=>Registered(t.auto,t.translated)).ToList();
         if(refresh && language.Length==0 && available.Count==0)return null;
@@ -234,7 +240,8 @@ internal static class Captions
         if(manual!=null && !Registered(manual.auto,manual.translated))return await LoadTrack(folder,manual,token,refresh);
         var ko=available.FirstOrDefault(t=>Korean(t.lang) && (language.Length==0 || !Korean(language) || t.lang==language));
         var others=available.Where(t=>!Korean(t.lang)).ToList();
-        var audio=SongFor(id,"",0).language;
+        knownAudio=SongFor(id,"",0).language??knownAudio;
+        var audio=knownAudio;
         if(string.IsNullOrEmpty(audio))audio=tracks.FirstOrDefault(t=>t.original && !t.translated)?.lang;
         Track? source;
         if(language.Length>0 && !Korean(language))source=manual;
@@ -258,8 +265,8 @@ internal static class Captions
         var primary=korean??original??selected;
         if(primary==null && ko!=null && source!=null)throw new IOException("유튜브 자막을 불러오지 못했습니다. 다시 시도하세요.");
         if(primary==null)return language.Length==0?registered.FirstOrDefault():null;
-        if(language.Length==0 || Korean(language))await WriteJson(preferencePath,new Preference(primary.lang,primary.auto,original?.lang??audio),token);
-        return korean!=null && original!=null?korean with {companion=original}:primary;
+        if(language.Length==0 || Korean(language))await WriteJson(preferencePath,new Preference(primary.lang,primary.auto,original?.lang??audio,knownAudio),token);
+        return WithAudio(korean!=null && original!=null?korean with {companion=original}:primary);
     }
     static async Task<SavedTrack> LoadTrack(string folder,Track track,CancellationToken token,bool refresh){
         var path=TrackPath(folder,track.lang,track.auto);

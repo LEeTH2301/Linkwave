@@ -1,4 +1,21 @@
 'use strict';
+async function cleanWikiSnapshot(snapshot){
+ if(!snapshot)return snapshot;
+ const wiki=url=>typeof url==='string' && /^https:\/\/namu\.wiki\/w\//i.test(url);
+ const marker=/[\[［][ \t\u00a0]*[0-9０-９]+[ \t\u00a0]*[\]］]/gu;
+ const clean=line=>typeof line==='string'?line.replace(marker,'').replace(/[ \t]{2,}/g,' ').trim():line;
+ const marked=line=>typeof line==='string' && line.search(marker)>=0;
+ if(snapshot.kind==='candidate' && (wiki(snapshot.item?.page)||wiki(snapshot.item?.OriginalSource))){
+  const item=snapshot.item;
+  if(item.plain?.some(marked)||item.Original?.some(marked)||item.cues?.some(c=>marked(c.text)||marked(c.originalText)))
+   return {...snapshot,item:await native('cleanWikiCandidate',{item})};
+ }
+ if(snapshot.kind==='youtube' && wiki(snapshot.page)){
+  const rows=snapshot.cues?.map(c=>({...c,text:marked(c.text)?clean(c.text):c.text,originalText:marked(c.originalText)?clean(c.originalText):c.originalText}));
+  return {...snapshot,cues:rows?.filter(c=>c.text||c.originalText),plain:snapshot.plain?.map(s=>marked(s)?clean(s):s).filter(Boolean)};
+ }
+ return snapshot;
+}
 function trackName(track){return track?.displayName||track?.title||track?.id||'';}
 function introCredit(track){
  if(!track)return '';

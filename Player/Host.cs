@@ -12,7 +12,10 @@ using Microsoft.Win32;
 namespace Linkwave;
 class Program
 {
-    [STAThread] static void Main() {
+    [STAThread] static void Main(string[] args) {
+        if(args.Length>0 && args[0].StartsWith("chrome-extension://",StringComparison.Ordinal)){
+            return;
+        }
         using var reopen=new EventWaitHandle(false,EventResetMode.AutoReset,@"Local\LinkwavePlayerOpen");
         using var instance=new Mutex(true,@"Local\LinkwavePlayer",out var first);
         if(!first){reopen.Set();return;}
@@ -27,6 +30,9 @@ class Program
 class Host : Window
 {
     readonly WebView2 web=new();
+    readonly MusicPane musicPane;
+    readonly MusicOffline musicOffline;
+    CancellationTokenSource? musicDownload;
     readonly CancellationTokenSource lifetime=new();
     CancellationTokenSource? export, stream, translation,analysis;
     string? writingSong;
@@ -40,6 +46,7 @@ class Host : Window
     readonly Window lyrics=new() { Title="Linkwave · 가사", Topmost=true, Width=Math.Min(890,SystemParameters.WorkArea.Width), Height=Math.Min(493,SystemParameters.WorkArea.Height), MinWidth=260, MinHeight=85,
         WindowStyle=WindowStyle.None, AllowsTransparency=true, ResizeMode=ResizeMode.CanResizeWithGrip, ShowInTaskbar=false, ShowActivated=false };
     readonly LyricsViewport lyricRows=new() {Margin=new Thickness(15,6,15,6)};
+    bool resizeLyricText=true;
     readonly SignalingOverlay signaling;
     readonly LyricsWindowLock lyricLock;
     readonly LyricsMiniPlayer lyricPlayer;
@@ -57,6 +64,7 @@ class Host : Window
     int scrollGeneration;
     readonly string data;
     readonly AudioCache audioCache;
+    bool audioCacheMounted;
     readonly LyricTempo lyricTempo=new();
     readonly CaptionTranslation translator;
     readonly PlayerTray tray;
@@ -68,7 +76,13 @@ class Host : Window
         audioCache=new AudioCache(Path.Combine(data,"AudioCache"));
         translator=new CaptionTranslation(data,new System.Net.Http.HttpClient{Timeout=TimeSpan.FromMinutes(4)});
         Title="Linkwave · 유튜브 플레이어"; Width=1150; Height=800; MinWidth=820; MinHeight=660;
-        WindowStartupLocation=WindowStartupLocation.CenterScreen; Content=web;
+        WindowStartupLocation=WindowStartupLocation.CenterScreen;
+        var layout=new Grid();
+        layout.RowDefinitions.Add(new RowDefinition{Height=new GridLength(0)});
+        layout.RowDefinitions.Add(new RowDefinition{Height=new GridLength(1,GridUnitType.Star)});
+        Grid.SetRow(web,1);layout.Children.Add(web);Content=layout;
+        musicPane=new MusicPane(layout,data);
+        musicOffline=new MusicOffline(data);
         var workArea=SystemParameters.WorkArea;
         lyrics.Left=workArea.Left+(workArea.Width-lyrics.Width)*.5;
         lyrics.Top=workArea.Top+(workArea.Height-lyrics.Height)*.812;
@@ -93,6 +107,7 @@ class Host : Window
         // When YouTube requires a click, let its own controls receive that gesture.
         videoLayer.IsHitTestVisibleChanged+=(_,_)=>lyricRows.IsHitTestVisible=!videoLayer.IsHitTestVisible;
         lyricLock=new LyricsWindowLock(lyrics,surface,lyricPlayer);
+        lyrics.SizeChanged+=(_,e)=>lyricRows.ResizeWithWindow(e.NewSize,resizeLyricText);
         lyricRows.SizeChanged+=(_,e)=>Send(new {eventName="lyricResize",height=e.NewSize.Height});
         lyrics.MouseWheel+=(_,e)=>{
             if(lyricLock.Locked || lyricLock.OverControls(e.GetPosition(surface)) || scrollTrack==null || e.Delta==0)return;
@@ -142,15 +157,19 @@ class Host : Window
             var parent=new System.Windows.Interop.WindowInteropHelper(this).Handle;
             translator.GoogleLookup=(title,cancel)=>GoogleLyrics.Read(env,parent,title,cancel);
             var core=web.CoreWebView2;
-            audioCache.Initialize();
+            try{
+                audioCache.Initialize();
+                core.SetVirtualHostNameToFolderMapping("audio.linkwave.example",audioCache.DirectoryPath,CoreWebView2HostResourceAccessKind.DenyCors);
+                audioCacheMounted=true;
+            }
+            catch(Exception e) when(e is IOException or UnauthorizedAccessException){Debug.WriteLine(e.Message);}
             Directory.CreateDirectory(Path.Combine(data,"Thumbnails"));
             core.SetVirtualHostNameToFolderMapping("thumb.linkwave.example",Path.Combine(data,"Thumbnails"),CoreWebView2HostResourceAccessKind.DenyCors);
-            core.SetVirtualHostNameToFolderMapping("audio.linkwave.example",audioCache.DirectoryPath,CoreWebView2HostResourceAccessKind.DenyCors);
             foreach(var host in new[]{"app.linkwave.example","embed.linkwave.example"})
                 core.SetVirtualHostNameToFolderMapping(host,Path.Combine(AppContext.BaseDirectory,"ui"),CoreWebView2HostResourceAccessKind.DenyCors);
             core.Settings.AreDefaultContextMenusEnabled=false;
             core.NavigationStarting+=(_,e)=>{if(e.Uri!=Origin+"/index.html")e.Cancel=true;};
-            core.NewWindowRequested+=(_,e)=>{e.Handled=true;if(Uri.TryCreate(e.Uri,UriKind.Absolute,out var u)&&u.Scheme=="https"&&(u.Host=="youtube.com"||u.Host.EndsWith(".youtube.com")))Open(u.AbsoluteUri);};
+            core.NewWindowRequested+=(_,e)=>e.Handled=true;
             core.WebMessageReceived+=OnMessage;
             core.Navigate(Origin+"/index.html");
         }catch(Exception ex){if(!exiting){MessageBox.Show(ex.Message,"시작 오류");ExitPlayer();}}};
@@ -165,7 +184,7 @@ class Host : Window
             try{
                 if(double.IsFinite(lyrics.Left)&&double.IsFinite(lyrics.Top))
                     File.WriteAllText(Path.Combine(data,"lyrics-window.json"),JsonSerializer.Serialize(new[]{lyrics.Left,lyrics.Top,lyrics.Width,lyrics.Height,requestedRows,(int)lyricLock.Mode}));
-            }finally{signaling.Close();lyricVideo.Close();web.Dispose();}
+            }finally{signaling.Close();lyricVideo.Close();musicPane.Close();web.Dispose();}
         };
     }
     internal void RestorePlayer(){
@@ -220,9 +239,28 @@ class Host : Window
             }
             case "info":return await MediaTools.Info(S("id"),S("key"),token);
             case "list":return await MediaTools.Playlist(S("id"),S("key"),token);
-            case "browser":Open(MediaTools.Video(S("id")));break;
-            case "cachedAudio":return audioCache.Find(S("id"));
-            case "cachedAudioList":return audioCache.List();
+            case "musicPaneOpen":await musicPane.Open((int)N("session"),S("id"),a.TryGetProperty("signIn",out var signIn)&&signIn.GetBoolean(),
+                a.TryGetProperty("shown",out var shown)&&shown.GetBoolean(),a.TryGetProperty("offline",out var offline)&&offline.GetBoolean());break;
+            case "musicOfflineList":return musicOffline.Verified();
+            case "musicPaneWarm":await musicPane.Warm();break;
+            case "musicOfflineCancel":musicDownload?.Cancel();break;
+            case "musicOfflineSave":{
+                if(musicDownload!=null)throw new IOException("Music 목록을 저장하는 중입니다.");
+                using var cancel=CancellationTokenSource.CreateLinkedTokenSource(token);
+                musicDownload=cancel;
+                try{
+                    await musicOffline.Run(a.GetProperty("ids").Deserialize<string[]>()??[],(index,total,id,message,phase)=>
+                        Send(new {eventName="musicOfflineProgress",index,total,id,message,phase}),cancel.Token,
+                        !(a.TryGetProperty("automatic",out var automatic)&&automatic.GetBoolean()&&musicOffline.Verified().Length>0));
+                } finally{musicDownload=null;}
+                break;
+            }
+            case "musicPaneShow":return musicPane.SetShown((int)N("session"),a.GetProperty("shown").GetBoolean());
+            case "musicPaneCommand":return await musicPane.Command((int)N("session"),S("action"),N("value"));
+            case "musicPaneClose":musicPane.Close((int)N("session"));break;
+            case "cachedAudio":return audioCacheMounted?audioCache.Find(S("id"),a.TryGetProperty("skipMusic",out var skipMusic)&&skipMusic.GetBoolean()):null;
+            case "cachedAudioList":return audioCacheMounted?audioCache.List():Array.Empty<string>();
+            case "cachedMusicList":return audioCacheMounted?audioCache.List(true):Array.Empty<string>();
             case "cachedThumbnails":return thumbnails.Covers();
             case "thumbnailPalette":{
                 var preview=thumbnails.Palette(S("id"),(int)N("index"));
@@ -235,9 +273,9 @@ class Host : Window
             case "thumbnailScenes":return await Task.Run(()=>thumbnails.LoadScenes(S("id"),token),token);
             case "storeAudio":
                 var audioId=S("id");
+                if(!audioCacheMounted){Send(new {eventName="audioCache",id=audioId,state="failed"});break;}
                 await audioCache.Store(audioId,token,state=>Send(new {eventName="audioCache",id=audioId,state}));
                 break;
-            case "invalidateAudio":audioCache.Invalidate(S("id"));break;
             case "stream":
                 stream?.Cancel();
                 using(var c=CancellationTokenSource.CreateLinkedTokenSource(token)){stream=c;try{return await MediaTools.Stream(S("id"),
@@ -260,6 +298,8 @@ class Host : Window
             case "prepareSignaling":await signaling.Prepare(S("id"),token);return true;
             case "signalingLines":return await signaling.ReadLines(S("id"),token);
             case "lyrics":
+                resizeLyricText=!a.TryGetProperty("resizeText",out var resize) || resize.ValueKind!=JsonValueKind.False;
+                lyricRows.ResizeWithWindow(lyrics.RenderSize,resizeLyricText);
                 bool pcCaptions=(S("trackId") is SignalingOverlay.VideoId or SignalingOverlay.Yararara) && a.TryGetProperty("signalingClock",out _);
                 lyricRows.Visibility=pcCaptions?Visibility.Collapsed:Visibility.Visible;
                 if(!pcCaptions)signaling.Hide();
@@ -319,6 +359,11 @@ class Host : Window
             case "hasTranslationKey":return translator.HasKey;
             case "koreanOriginalForCaption":
                 return await translator.KoreanOriginalForCaption(S("id"),S("title"),a.GetProperty("track").Deserialize<Captions.SavedTrack>()!,token);
+            case "cleanWikiCandidate":
+                return CaptionTranslation.CleanWikiCandidate(a.GetProperty("item").Deserialize<CaptionTranslation.Generated>()!);
+            case "alignCachedKorean":
+                return CaptionTranslation.AlignKoreanLines(a.GetProperty("plain").Deserialize<string[]>()!,
+                    a.GetProperty("cues").Deserialize<CaptionTranslation.Cue[]>()!,true);
             case "chatgptStatus":return translator.Account.Status();
             case "chatgptModels":return await translator.Account.Models(token);
             case "chatgptSignIn":await translator.Account.SignIn(Open,token);return translator.Account.Status();
@@ -409,7 +454,8 @@ class Host : Window
                         }
                         var search=translator.GenerateLyrics(videoId,S("title"),S("model"),S("effort"),AudioForLyrics,c.Token,S("provider")!="api",N("duration"),CaptionProgress,
                             partial=>{if(!c.IsCancellationRequested)Send(new {eventName="lyricCandidates",id=videoId,generation=N("generation"),refreshId=ticket,partial});},
-                            refresh:refreshing,keepPage:S("keepPage"),allowAi:!a.TryGetProperty("allowAi",out var ai) || ai.GetBoolean());
+                            refresh:refreshing,keepPage:S("keepPage"),allowAi:!a.TryGetProperty("allowAi",out var ai) || ai.GetBoolean(),
+                            autoTiming:initialSearch || a.TryGetProperty("autoTiming",out var timing) && timing.GetBoolean());
                         if(refreshing)refreshResults[videoId]=search;
                         if(initialSearch)lyricSearches[videoId]=(search,c);
                         return await search;
