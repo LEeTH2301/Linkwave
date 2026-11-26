@@ -643,6 +643,8 @@ sealed class AuthServer:HttpMessageHandler{
     }
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage req,CancellationToken token){
         switch(req.RequestUri!.AbsolutePath){
+            case "/watch" when req.RequestUri.Host=="music.youtube.com":
+                return new(HttpStatusCode.NotFound);
             case "/api/songs/byPv":
             case "/search/all/":
                 if(!LiveRecordings)return new(HttpStatusCode.NotFound);
